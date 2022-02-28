@@ -35,7 +35,7 @@
         options.output_executable_name = "kernel_elf";
         options.output_path = ".build/";
         options.output_type = .EXECUTABLE;
-        options.entry_point_name = "dummy_entry";
+        options.entry_point_name = "kernel_entry";
 
         options.stack_trace = false;
         options.array_bounds_check = .OFF;
@@ -105,7 +105,7 @@
                 append(*generated_asm, tprint("    dd 0x%\t\t; Size in bytes\n", header.p_filesz));
                 append(*generated_asm, tprint("    dd 0x%\t\t; Zero clear\n", header.p_memsz));
 
-                print("Header:\n%\n", << header);
+                // print("Header:\n%\n", << header);
                 append(*kernel_binary, elf.data + header.p_offset, xx header.p_filesz);
                 kernel_offset += xx header.p_filesz;
             }
