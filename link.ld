@@ -8,6 +8,6 @@ SECTIONS {
     .data   : { * (.data);  }
     . = 0x107000;
     .text   : { * (.text);  }
-    . = 0x110000;
+    . = 0x10c000;
     .bss   : { * (.bss);  }
 }
