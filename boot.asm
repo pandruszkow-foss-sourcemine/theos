@@ -101,7 +101,6 @@ load_kernel:
 
     cld
     int dbs
-
     popa
     ret
 
