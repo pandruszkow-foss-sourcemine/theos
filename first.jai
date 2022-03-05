@@ -1,4 +1,5 @@
 
+#load "modules/Nasm.jai";
 #load "elf/elf.jai";
 
 #if OS == .WINDOWS {
@@ -14,6 +15,48 @@
     }
 }
 
+
+ISR_DECLARATION :: #string ISR
+isr_slot_0x% :: () {
+
+    frame: *Isr_Stack_Frame;
+
+    print("\n\n    AN EXCEPTION HAS OCCURED:\n=== % ===\n");
+    print("Interrupt frame: ====================\n");
+    print("RIP:   "); print_hex(frame.ip);    print("\n");
+    print("CS:    "); print_hex(frame.cs);    print("\n");
+    print("FLAGS: "); print_hex(frame.flags); print("\n");
+    print("SP:    "); print_hex(frame.sp);    print("\n");
+    print("SS:    "); print_hex(frame.ss);    print("\n");
+    print("=====================================\n");
+
+    while true {}
+}
+ISR;
+
+interrupts: [] struct { message: string; slot: int; } = .[
+    .{ "Division by zero",                 0x00 },
+    .{ "Debug exception",                  0x01 },
+    .{ "Non-maskable interrupt exception", 0x02 },
+    .{ "Breakpoint exception",             0x03 },
+    .{ "Overflow exception",               0x04 },
+    .{ "Bound range exceeded exception",   0x05 },
+    .{ "Invalid opcode exception",         0x06 },
+    .{ "Device not available exception",   0x07 },
+    .{ "Double Fault",                     0x08 },
+    .{ "Invalid TSS",                      0x0a },
+    .{ "Segment not present",              0x0b },
+    .{ "Stack segment fault",              0x0c },
+    .{ "General protection fault",         0x0d },
+    .{ "Page fault",                       0x0e },
+    .{ "Floating point exception",         0x10 },
+    .{ "Alignment check fault",            0x11 },
+    .{ "Machine check fault",              0x12 },
+    .{ "SIMD Float exception fault",       0x13 },
+    .{ "Virtualization exception fault",   0x14 },
+    .{ "Security exception fault",         0x1e },
+];
+
 #run {
     set_build_options_dc(.{do_output = false});
     user_args, compiler_args := compiler_get_command_line_arguments();
@@ -27,6 +70,7 @@
             generate_elf_bindings();
         }
     }
+    #if OS != .LINUX return;
 
     write_string("\n=== Compiling Kernel ===\n");
     {
@@ -49,6 +93,23 @@
 
         compiler_begin_intercept(w);
         add_build_file("kernel.jai", w);
+
+        {
+            isr_code: String_Builder;
+            for interrupts {
+                append(*isr_code, tprint(ISR_DECLARATION, formatInt(it.slot, base=16), it.message));
+                append(*isr_code, "\n");
+            }
+
+            append(*isr_code, "register_generated_isrs :: () {\n");
+            for interrupts {
+                append(*isr_code, tprint("    idt_add_handler(xx isr_slot_0x%, 0x%1);\n", formatInt(it.slot, base=16)));
+            }
+            append(*isr_code, "}\n");
+
+            add_build_string(builder_to_string(*isr_code), w);
+        }
+
         for all_messages {
             if it.kind == .ERROR {
                 write_string("Kernel Compilation Failure!\n");
@@ -78,10 +139,11 @@
             print("Elf header: %\n\n", << elf_header);
 
             PAGE_TABLE_ADDRESS   :: 0x8000;
-            PAGE_TABLE_SIZE      :: 1024 * 24;
+            PAGE_TABLE_SIZE      :: 0x4000;
             KERNEL_START_ADDRESS :: PAGE_TABLE_ADDRESS + PAGE_TABLE_SIZE;
 
             generated_asm: String_Builder;
+            append(*generated_asm, "\n");
             append(*generated_asm, tprint("kernel_entry_point    equ 0x%\n", elf_header.e_entry));
             append(*generated_asm, tprint("kernel_start_address  equ 0x%\n", KERNEL_START_ADDRESS));
             append(*generated_asm, tprint("page_table_address    equ 0x%\n", PAGE_TABLE_ADDRESS));
@@ -102,19 +164,37 @@
                 append(*generated_asm, tprint("  .section_%:\n", count));
                 append(*generated_asm, tprint("    dd 0x%\t\t; Target address (VMA)\n", header.p_vaddr));
                 append(*generated_asm, tprint("    dd 0x%\t\t; Source address (LMA)\n", kernel_offset));
-                append(*generated_asm, tprint("    dd 0x%\t\t; Size in bytes\n", header.p_filesz));
-                append(*generated_asm, tprint("    dd 0x%\t\t; Zero clear\n", header.p_memsz));
+                append(*generated_asm, tprint("    dd 0x%\t\t; Zero clear in qwords\n", header.p_memsz  / 8));
+                append(*generated_asm, tprint("    dd 0x%\t\t; Size in qwords\n",       header.p_filesz / 8));
 
                 // print("Header:\n%\n", << header);
                 append(*kernel_binary, elf.data + header.p_offset, xx header.p_filesz);
                 kernel_offset += xx header.p_filesz;
             }
             kernel_size := builder_string_length(*kernel_binary);
-
             write_entire_file(".build/kernel.bin", builder_to_string(*kernel_binary));
 
             append(*generated_asm, tprint("  .count: dd 0x%\n\n", count));
             append(*generated_asm, tprint("kernel_sectors equ 0x%\n", kernel_size / 512 + 1));
+
+            if false for 0..elf_header.e_shnum - 1 {
+                base := elf.data + elf_header.e_shoff;
+                base += it       * elf_header.e_shentsize;
+                header := cast(*Elf64_Shdr) base;
+
+                if header.sh_type != SHT_SYMTAB continue;
+
+                entry_count := header.sh_size / header.sh_entsize;
+                assert(header.sh_size % header.sh_entsize == 0);
+
+                for 0..entry_count - 1 {
+                    base := elf.data + header.sh_offset;
+                    base += it * header.sh_entsize;
+                    symbol := cast(*Elf64_Sym) base;
+
+                    // print("Symbol: \n%\n", << symbol);
+                }
+            }
 
             write_entire_file(".build/generated.asm", builder_to_string(*generated_asm));
         }
@@ -146,8 +226,15 @@
 }
 
 assemble :: () -> bool {
-    nasm_command := string.["nasm", "boot.asm", "-f", "bin", "-o", ".build/boot_sector.bin"];
-    success, error_code, stdout, stderr := os_run_command(.. nasm_command, capture_and_return_output = true);
+    options: Nasm_Options;
+    options.outfile = ".build/boot_sector.bin";
+    options.format = .BIN;
+    options.input_file_name = "boot.asm";
+    options.warnings |= .ALL;
+
+    array_add(*options.include, ".build/");
+
+    success, error_code, stdout, stderr := run_nasm(options);
 
     if !success {
         write_string("nasm failed to run!\n");

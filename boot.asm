@@ -24,7 +24,7 @@ start:
     mov sp, bp
 
     ; === Video mode ===
-    mov al, 0x03
+    mov al, 0x3
     int vbs
 
     ; === Write string ===
@@ -85,8 +85,14 @@ disk_address_packet:
   .segment:    dw 0
   .source_lba: dq 1
 
+; idt_desc:
+;     .limit: dw 0x100
+;     .base:  dq idt_base
+
 load_kernel:
     pusha
+
+;    lidt idt_desc
     mov word [disk_address_packet.sectors], kernel_sectors
     mov word [disk_address_packet.buffer],  kernel_start_address
 
@@ -122,7 +128,22 @@ long_mode_start:
     add eax, 4
     mov esi, [eax]
 
-    ; === Count ===
+    ; === Clear ===
+    add eax, 4
+    mov ecx, [eax]
+
+    push rax
+    push rcx
+    push rdi
+
+    xor eax, eax
+    rep stosq
+
+    pop rdi
+    pop rcx
+    pop rax
+
+    ; === Copy ===
     add eax, 4
     mov ecx, [eax]
     rep movsq

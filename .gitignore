@@ -2,3 +2,5 @@
 /.build/*
 /bochs state/*
 theos
+*.lock
+
