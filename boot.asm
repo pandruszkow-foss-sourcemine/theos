@@ -92,7 +92,6 @@ disk_address_packet:
 load_kernel:
     pusha
 
-;    lidt idt_desc
     mov word [disk_address_packet.sectors], kernel_sectors
     mov word [disk_address_packet.buffer],  kernel_start_address
 
@@ -112,8 +111,10 @@ load_kernel:
 
 [bits 64]
 long_mode_start:
-    xor ebx, ebx
+    ; mov rbp, 0x1a0000;
+    ; mov rsp, rbp;
 
+    xor ebx, ebx
   .loop:
     cmp dword ebx, [kernel_section_table.count]
     je .end

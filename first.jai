@@ -110,6 +110,8 @@ interrupts: [] struct { message: string; slot: int; } = .[
             add_build_string(builder_to_string(*isr_code), w);
         }
 
+        add_build_string(tprint("COMPILER_VERSION :: \"%\";", compiler_get_version_info(null)), w);
+
         for all_messages {
             if it.kind == .ERROR {
                 write_string("Kernel Compilation Failure!\n");

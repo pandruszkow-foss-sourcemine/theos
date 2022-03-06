@@ -1,21 +1,57 @@
 
+#import "Machine_X64";
+
+cpu: Cpu_X86;
+
 #program_export
 kernel_entry :: () {
     hide_vga_cursor();
     vga_attribute(0x10, 3, set = false);
 
+    screen_color = cast(u8) Vga_Color.CYAN | (Vga_Color.BLACK << 4);
+    clear_screen();
+
+    print("\n\n");
+    print(TITLE);
+    print("\n");
+
+    get_cpu_info(*cpu);
+    ti := type_info(x86_Feature_Flag);
+
+    print("\n      Supported features: -----------------------------------------------", .WHITE);
+    flags_on_this_line: int;
+    for 0..ti.names.count-1 {
+        if check_feature(cpu.feature_leaves, xx ti.values[it]) {
+            name := ti.names[it];
+            if name.count >= 8 continue;
+
+            if (flags_on_this_line % 7) == 0 print("\n      ");
+
+            print("| ", .WHITE);
+            print(name, .LIGHT_CYAN);
+            for 1..8 - name.count  print(" ");
+            flags_on_this_line += 1;
+        }
+    }
+    print("\n      -------------------------------------------------------------------\n", .WHITE);
+
     random_seed = rdtsc();
 
-    // vga_set_palette_entry(xx Vga_Color.CYAN, 0xff, 0xff, 0xff);
+    // print("\n      The current month is ");
+    // print(months[cmos_read(.MONTH)], foreground = .RED);
+    // print(".\n");
 
-    screen_color = cast(u8) Vga_Color.LIGHT_CYAN | (Vga_Color.BLACK << 4);
-    clear_screen();
-    print(TITLE);
+    print("      Compiled using ");
+    print("Jai ", .RED);
+    print(COMPILER_VERSION, .RED);
+    print(".\n");
+    // vga_set_palette_entry(xx Vga_Color.CYAN, 0xff, 0xff, 0xff);
 
     idt_init();
     pic_init();
     enable_ps2_keyboard();
 
+    wait(30);
     gol();
     while true {};
 }
@@ -44,16 +80,6 @@ io_delay :: () {
         xor zero, zero;
         out.b 0x80, zero;
     }
-}
-
-rdtsc :: () -> u64 {
-    upper, lower: u64;
-    #asm {
-        upper === d;
-        lower === a;
-        rdtsc upper, lower;
-    }
-    return lower | (upper << 32);
 }
 
 random_seed: u64;
@@ -203,8 +229,6 @@ TITLE :: #string END
                 | ## /##| ##  | ##| ##_____/| ##  | ## \____  ##              
                 |  ####/| ##  | ##|  #######|  ######/ /#######/              
                  \___/  |__/  |__/ \_______/ \______/ |_______/               
-              
-================================================================================
 END;
 
 vga_columns :: 80;
@@ -214,7 +238,10 @@ text_cursor: int;
 screen_color := cast(u8) Vga_Color.YELLOW | (Vga_Color.GRAY << 4);
 vga_screen :: cast(*u8) 0xb8000;
 
-print :: (text: string) {
+print :: (text: string, foreground: Vga_Color = 255, background: Vga_Color = 255) {
+    fg := ifx foreground == 255 then  screen_color       & 0xf else xx foreground;
+    bg := ifx background == 255 then (screen_color >> 4) & 0xf else xx background;
+
     for cast([] u8) text {
         if it == 10 {
             distance := text_cursor % vga_columns;
@@ -226,7 +253,8 @@ print :: (text: string) {
 
         i := text_cursor;
         vga_screen[i * 2]     = it;
-        vga_screen[i * 2 + 1] = screen_color;
+
+        vga_screen[i * 2 + 1] = cast(u8) fg | (bg << 4);;
 
         text_cursor += 1;
     }
@@ -239,19 +267,14 @@ print_hex :: (number: $T) {
     print("0x");
 
     table := "0123456789abcdef";
-    for 0..size * 2 {
+    for 0..size * 2 - 1 {
         index := number >> (it * 4);
         index &= 0xf;
 
-        vga_screen[(text_cursor + size * 2 - it) * 2] = table[index];
+        vga_screen[(text_cursor + size * 2 - it) * 2 - 2] = table[index];
     }
     text_cursor += size * 2;
-    text_cursor += 1;
-}
-
-set_colors :: (foreground: Vga_Color, background: Vga_Color) {
-    for 0..vga_columns * vga_rows - 1 {
-    }
+    // text_cursor -= 1;
 }
 
 clear_screen :: () {
@@ -331,11 +354,44 @@ Vga_Color :: enum u8 {
 
 
 
+Cmos_Ports :: enum u16 {
+    ADDRESS :: 0x70;
+    DATA    :: 0x71;
+}
 
+Cmos_Registers :: enum u8 {
+    SECONDS          :: 0x00;
+    MINUTES          :: 0x02;
+    HOURS            :: 0x04;
+    WEEKDAY          :: 0x06;
+    DAY_OF_THE_MONTH :: 0x07;
+    MONTH            :: 0x08;
+    YEAR             :: 0x09;
+    CENTURY          :: 0x32;
+}
 
+cmos_read :: (register: Cmos_Registers) -> u8 {
+    using Cmos_Ports;
 
+    port_write(xx ADDRESS, xx register);
+    wait(1);
+    return port_read(xx DATA);
+}
 
-
+months :: string.[
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
 
 
 
@@ -389,20 +445,16 @@ gol :: () {
     height := vga_rows;
 
     count := width * height;
-    buffer_a: *u8 = xx 0x110000;
+    buffer_a: *u8 = xx 0x130000;
     buffer_b: *u8 = buffer_a + count;
-    for 0..count-1 buffer_a[it] = 0;
-
-    for 0..TITLE.count - 1 {
-        // buffer_a[it] = xx (random(*random_seed) & 1);
-        buffer_a[it + width * 10] = xx ifx TITLE[it] == #char "#" then 1 else 0;
-    }
 
     for 0..count - 1 {
-        if buffer_a[it] > 0 vga_screen[it * 2 + 1] = 0xff;
-        else                vga_screen[it * 2 + 1] = 0x00;
+        c := vga_screen[it * 2];
+        buffer_a[it] = xx (c != 0 && c != #char " ");
+        if buffer_a[it] > 0 vga_screen[it * 2 + 1] = 0x00;
+        else                vga_screen[it * 2 + 1] = 0xff;
     }
-    wait(20);
+    wait(10);
 
     read :: (x: int, y: int) -> bool #expand {
         if y < 0 || y > height-1 || x < 0 || x > width-1 return false;
@@ -434,8 +486,8 @@ gol :: () {
         }
 
         for 0..count - 1 {
-            if buffer_b[it] > 0 vga_screen[it * 2 + 1] = 0xff;
-            else                vga_screen[it * 2 + 1] = 0x00;
+            if buffer_b[it] > 0 vga_screen[it * 2 + 1] = 0x00;
+            else                vga_screen[it * 2 + 1] = 0xff;
         }
 
         temp := buffer_a;
