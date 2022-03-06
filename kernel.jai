@@ -1,22 +1,22 @@
 
-random_seed: u64;
-
 #program_export
 kernel_entry :: () {
     hide_vga_cursor();
     vga_attribute(0x10, 3, set = false);
 
-    screen_color = cast(u8) Vga_Color.LIGHT_GREEN | (Vga_Color.GRAY << 4);
-    clear_screen();
-
     random_seed = rdtsc();
 
+    // vga_set_palette_entry(xx Vga_Color.CYAN, 0xff, 0xff, 0xff);
+
+    screen_color = cast(u8) Vga_Color.LIGHT_CYAN | (Vga_Color.BLACK << 4);
+    clear_screen();
     print(TITLE);
 
     idt_init();
-
     pic_init();
     enable_ps2_keyboard();
+
+    gol();
     while true {};
 }
 
@@ -38,6 +38,14 @@ port_read :: (port: u16) -> u8 {
     return value;
 }
 
+io_delay :: () {
+    #asm {
+        zero: gpr === a;
+        xor zero, zero;
+        out.b 0x80, zero;
+    }
+}
+
 rdtsc :: () -> u64 {
     upper, lower: u64;
     #asm {
@@ -48,7 +56,9 @@ rdtsc :: () -> u64 {
     return lower | (upper << 32);
 }
 
-random :: (state: *$T) -> T {
+random_seed: u64;
+
+random :: (state: *u64) -> u64 {
     x := << state;
     x ^= x >> 12;
     x ^= x << 25;
@@ -108,10 +118,6 @@ idt_init :: () {
     idt_desc.limit = 0x100 * size_of(Idt_Entry);
     idt_desc.base = *idt;
 
-    for 0..0x100 - 1 {
-        idt[it] = .{};
-    }
-
     register_generated_isrs();
 
     address := *idt_desc;
@@ -154,7 +160,7 @@ pic_init :: () {
     port_write(xx SLAVE_DATA, 0x2);
     port_write(xx SLAVE_DATA, 1);
     port_write(xx SLAVE_DATA, mask);
-    port_write(xx MASTER_DATA, 0xff);
+    port_write(xx SLAVE_DATA, 0xff);
 
     #asm { sti; }
 }
@@ -189,15 +195,15 @@ enable_ps2_keyboard :: () {
 
 
 TITLE :: #string END
-                 /##     /##                                    
-                | ##    | ##                                    
-               /######  | #######   /######   /######   /#######
-              |_  ##_/  | ##__  ## /##__  ## /##__  ## /##_____/
-                | ##    | ##  \ ##| ########| ##  \ ##|  ###### 
-                | ## /##| ##  | ##| ##_____/| ##  | ## \____  ##
-                |  ####/| ##  | ##|  #######|  ######/ /#######/
-                 \___/  |__/  |__/ \_______/ \______/ |_______/ 
-
+                 /##     /##                                                  
+                | ##    | ##                                                  
+               /######  | #######   /######   /######   /#######              
+              |_  ##_/  | ##__  ## /##__  ## /##__  ## /##_____/              
+                | ##    | ##  \ ##| ########| ##  \ ##|  ######               
+                | ## /##| ##  | ##| ##_____/| ##  | ## \____  ##              
+                |  ####/| ##  | ##|  #######|  ######/ /#######/              
+                 \___/  |__/  |__/ \_______/ \______/ |_______/               
+              
 ================================================================================
 END;
 
@@ -243,6 +249,11 @@ print_hex :: (number: $T) {
     text_cursor += 1;
 }
 
+set_colors :: (foreground: Vga_Color, background: Vga_Color) {
+    for 0..vga_columns * vga_rows - 1 {
+    }
+}
+
 clear_screen :: () {
     for 0..vga_columns * vga_rows - 1 {
         vga_screen[it * 2]     = 0;
@@ -251,19 +262,38 @@ clear_screen :: () {
     text_cursor = 0;
 }
 
-hide_vga_cursor :: () {
-    port_write(0x3d4, 0x0a);
-    port_write(0x3d5, 0x20);
-}
-
-Vga_Ports :: enum u16 {
-    INPUT_STATUS      :: 0x3da;
+Vga_Registers :: enum u16 {
     ATTRIBUTE_ADDRESS :: 0x3c0;
     DATA_READ         :: 0x3c1;
+    DAC_PALETTE_MASK  :: 0x3c6;
+    DAC_STATE         :: 0x3c7;
+    DAC_ADDRESS_READ  :: 0x3c7;
+    DAC_ADDRESS_WRITE :: 0x3c8;
+    DAC_DATA          :: 0x3c9;
+    CRT_CONTROL_INDEX :: 0x3d4;
+    CRT_CONTROL_DATA  :: 0x3d5;
+    INPUT_STATUS      :: 0x3da;
+}
+
+hide_vga_cursor :: () {
+    using Vga_Registers;
+
+    port_write(xx CRT_CONTROL_INDEX, 0x0a);
+    port_write(xx CRT_CONTROL_DATA,  0x20);
+}
+
+vga_set_palette_entry :: (index: u8, red: u8, green: u8, blue: u8) {
+    using Vga_Registers;
+
+    port_write(xx DAC_PALETTE_MASK, 0xff);
+    port_write(xx DAC_ADDRESS_WRITE, index);
+    port_write(xx DAC_DATA, red);
+    port_write(xx DAC_DATA, green);
+    port_write(xx DAC_DATA, blue);
 }
 
 vga_attribute :: (register_name: u8, bit: u8, set: bool = true) {
-    using Vga_Ports;
+    using Vga_Registers;
 
     PAS:  u8 = 1 << 5;
     mask: u8 = xx 1 << bit;
@@ -291,12 +321,12 @@ Vga_Color :: enum u8 {
     WHITE         :: 0x07;
     GRAY          :: 0x08;
     LIGHT_BLUE    :: 0x09;
-    LIGHT_GREEN   :: 0x0A;
-    LIGHT_CYAN    :: 0x0B;
-    LIGHT_RED     :: 0x0C;
-    LIGHT_MAGENTA :: 0x0D;
-    YELLOW        :: 0x0E;
-    BRIGHT_WHITE  :: 0x0F;
+    LIGHT_GREEN   :: 0x0a;
+    LIGHT_CYAN    :: 0x0b;
+    LIGHT_RED     :: 0x0c;
+    LIGHT_MAGENTA :: 0x0d;
+    YELLOW        :: 0x0e;
+    BRIGHT_WHITE  :: 0x0f;
 }
 
 
@@ -354,3 +384,63 @@ funky :: () {
 */
 
 
+gol :: () {
+    width := vga_columns;
+    height := vga_rows;
+
+    count := width * height;
+    buffer_a: *u8 = xx 0x110000;
+    buffer_b: *u8 = buffer_a + count;
+    for 0..count-1 buffer_a[it] = 0;
+
+    for 0..TITLE.count - 1 {
+        // buffer_a[it] = xx (random(*random_seed) & 1);
+        buffer_a[it + width * 10] = xx ifx TITLE[it] == #char "#" then 1 else 0;
+    }
+
+    for 0..count - 1 {
+        if buffer_a[it] > 0 vga_screen[it * 2 + 1] = 0xff;
+        else                vga_screen[it * 2 + 1] = 0x00;
+    }
+    wait(20);
+
+    read :: (x: int, y: int) -> bool #expand {
+        if y < 0 || y > height-1 || x < 0 || x > width-1 return false;
+        return `buffer_a[x + y * width] > 0; // `
+    }
+
+    write :: (x: int, y: int, value: bool) #expand {
+        index := x + y * width;
+        if value `buffer_b[index] = 1;
+        else `buffer_b[index] = 0;
+    }
+
+    while true {
+        for y: 0..height-1 for x: 0..width-1 {
+            sum: int;
+            sum += xx read(x-1, y-1);
+            sum += xx read(x-1, y  );
+            sum += xx read(x-1, y+1);
+            sum += xx read(x  , y-1);
+
+            sum += xx read(x  , y+1);
+            sum += xx read(x+1, y-1);
+            sum += xx read(x+1, y  );
+            sum += xx read(x+1, y+1);
+            if sum < 2 write(x, y, false);
+            else if sum > 3 write(x, y, false);
+            else if sum == 3 write(x, y, true);
+            else write(x, y, read(x, y));
+        }
+
+        for 0..count - 1 {
+            if buffer_b[it] > 0 vga_screen[it * 2 + 1] = 0xff;
+            else                vga_screen[it * 2 + 1] = 0x00;
+        }
+
+        temp := buffer_a;
+        buffer_a = buffer_b;
+        buffer_b = temp;
+        wait(2);
+    }
+}
