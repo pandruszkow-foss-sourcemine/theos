@@ -20,6 +20,7 @@ ISR_DECLARATION :: #string ISR
 isr_slot_0x% :: () {
 
     frame: *Isr_Stack_Frame;
+    text_cursor = 0;
 
     print("\n\n    AN EXCEPTION HAS OCCURED:\n=== % ===\n");
     print("Interrupt frame: ====================\n");
@@ -166,8 +167,8 @@ interrupts: [] struct { message: string; slot: int; } = .[
                 append(*generated_asm, tprint("  .section_%:\n", count));
                 append(*generated_asm, tprint("    dd 0x%\t\t; Target address (VMA)\n", header.p_vaddr));
                 append(*generated_asm, tprint("    dd 0x%\t\t; Source address (LMA)\n", kernel_offset));
-                append(*generated_asm, tprint("    dd 0x%\t\t; Zero clear in qwords\n", header.p_memsz  / 8));
-                append(*generated_asm, tprint("    dd 0x%\t\t; Size in qwords\n",       header.p_filesz / 8));
+                append(*generated_asm, tprint("    dd 0x%\t\t; Qwords to zero clear\n", header.p_memsz  / 8));
+                append(*generated_asm, tprint("    dd 0x%\t\t; Qwords to copy\n",       header.p_filesz / 8));
 
                 // print("Header:\n%\n", << header);
                 append(*kernel_binary, elf.data + header.p_offset, xx header.p_filesz);

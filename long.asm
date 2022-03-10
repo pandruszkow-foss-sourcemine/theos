@@ -61,7 +61,7 @@ SwitchToLongMode:
     mov [es:di], eax
     add eax, 0x1000
     add di, 8
-    cmp eax, 0x300000                 ; If we did all 2MiB, end.
+    cmp eax, 0x200000                 ; If we did all 2MiB, end.
     jb .LoopPageTable
  
     pop di                            ; Restore DI.

@@ -85,10 +85,6 @@ disk_address_packet:
   .segment:    dw 0
   .source_lba: dq 1
 
-; idt_desc:
-;     .limit: dw 0x100
-;     .base:  dq idt_base
-
 load_kernel:
     pusha
 
@@ -111,8 +107,6 @@ load_kernel:
 
 [bits 64]
 long_mode_start:
-    ; mov rbp, 0x1a0000;
-    ; mov rsp, rbp;
 
     xor ebx, ebx
   .loop:

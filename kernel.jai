@@ -1,5 +1,5 @@
 
-#import "Machine_X64";
+#load "modules/Machine_X64.jai";
 
 cpu: Cpu_X86;
 
@@ -7,51 +7,26 @@ cpu: Cpu_X86;
 kernel_entry :: () {
     hide_vga_cursor();
     vga_attribute(0x10, 3, set = false);
-
-    screen_color = cast(u8) Vga_Color.CYAN | (Vga_Color.BLACK << 4);
-    clear_screen();
-
-    print("\n\n");
-    print(TITLE);
-    print("\n");
-
-    get_cpu_info(*cpu);
-    ti := type_info(x86_Feature_Flag);
-
-    print("\n      Supported features: -----------------------------------------------", .WHITE);
-    flags_on_this_line: int;
-    for 0..ti.names.count-1 {
-        if check_feature(cpu.feature_leaves, xx ti.values[it]) {
-            name := ti.names[it];
-            if name.count >= 8 continue;
-
-            if (flags_on_this_line % 7) == 0 print("\n      ");
-
-            print("| ", .WHITE);
-            print(name, .LIGHT_CYAN);
-            for 1..8 - name.count  print(" ");
-            flags_on_this_line += 1;
-        }
-    }
-    print("\n      -------------------------------------------------------------------\n", .WHITE);
-
     random_seed = rdtsc();
 
-    // print("\n      The current month is ");
-    // print(months[cmos_read(.MONTH)], foreground = .RED);
-    // print(".\n");
+    // while true {
+    //     theme.background = xx random() & 0xf;
+    //     theme.normal = xx random() & 0xf;
+    //     theme.highlight = xx random() & 0xf;
+    //     theme.accent = xx random() & 0xf;
+    //     theme.foreground = xx random() & 0xf;
+    //     welcome_screen();
+    //     wait(20000);
+    // }
 
-    print("      Compiled using ");
-    print("Jai ", .RED);
-    print(COMPILER_VERSION, .RED);
-    print(".\n");
-    // vga_set_palette_entry(xx Vga_Color.CYAN, 0xff, 0xff, 0xff);
+    cmos_init();
+    welcome_screen();
 
     idt_init();
     pic_init();
     enable_ps2_keyboard();
 
-    wait(30);
+    wait(50000);
     gol();
     while true {};
 }
@@ -84,18 +59,18 @@ io_delay :: () {
 
 random_seed: u64;
 
-random :: (state: *u64) -> u64 {
+random :: (state: *u64 = *random_seed) -> u64 {
     x := << state;
     x ^= x >> 12;
     x ^= x << 25;
     x ^= x >> 27;
 
     << state = x;
-    return x * 0x2545F4914F6CDD1D;
+    return x * 0x2545f4914f6cdd1d;
 }
 
 wait :: (time: int = 10) {
-    for 1..1000000 * time { x := it; }
+    for 1..1000 * time { x := it; }
 }
 
 
@@ -231,16 +206,80 @@ TITLE :: #string END
                  \___/  |__/  |__/ \_______/ \______/ |_______/               
 END;
 
+
+welcome_screen :: () {
+    clear_screen();
+
+    print("\n\n");
+    print(TITLE);
+    print("\n\n");
+
+
+    old_foreground := theme.normal;
+    theme.normal = theme.foreground;
+    print("      Boot time is ");
+
+    print(months[cmos_read(.MONTH) - 1]);
+    print(" ");
+    print(cmos_read(.DAY_OF_THE_MONTH));
+    print(", ");
+    print(cmos_read(.YEAR) + 2000);
+    print(", ");
+
+    hours := cmos_read(.HOURS);
+    if hours < 10 print("0"); print(hours);
+    print(":");
+
+    minutes := cmos_read(.MINUTES);
+    if minutes < 10 print("0"); print(minutes);
+    print(":");
+
+    seconds := cmos_read(.SECONDS);
+    if seconds < 10 print("0"); print(seconds);
+    print(".\n\n");
+
+    theme.normal = old_foreground;
+
+    get_cpu_info(*cpu);
+    ti := type_info(x86_Feature_Flag);
+
+    print("      Supported CPU features: -------------------------------------------", theme.foreground);
+    flags_on_this_line: int;
+    for 0..ti.names.count-1 {
+        if check_feature(cpu.feature_leaves, xx ti.values[it]) {
+            name := ti.names[it];
+            if name.count >= 8 continue;
+
+            if (flags_on_this_line % 7) == 0 print("\n      ");
+
+            print("| ", theme.foreground);
+            print(name, theme.highlight);
+            for 1..8 - name.count  print(" ");
+            flags_on_this_line += 1;
+        }
+    }
+    print("\n      -------------------------------------------------------------------\n", theme.foreground);
+
+    print("      Compiled using ");
+    print("Jai ", theme.accent);
+    print(COMPILER_VERSION, theme.accent);
+    print(".\n");
+}
+
+
 vga_columns :: 80;
 vga_rows    :: 25;
 
 text_cursor: int;
-screen_color := cast(u8) Vga_Color.YELLOW | (Vga_Color.GRAY << 4);
 vga_screen :: cast(*u8) 0xb8000;
 
+get_attribute :: () -> u8 {
+    return cast(u8) theme.normal | (theme.background << 4);
+}
+
 print :: (text: string, foreground: Vga_Color = 255, background: Vga_Color = 255) {
-    fg := ifx foreground == 255 then  screen_color       & 0xf else xx foreground;
-    bg := ifx background == 255 then (screen_color >> 4) & 0xf else xx background;
+    fg := ifx foreground == 255 then theme.normal else xx foreground;
+    bg := ifx background == 255 then theme.background else xx background;
 
     for cast([] u8) text {
         if it == 10 {
@@ -253,10 +292,34 @@ print :: (text: string, foreground: Vga_Color = 255, background: Vga_Color = 255
 
         i := text_cursor;
         vga_screen[i * 2]     = it;
-
-        vga_screen[i * 2 + 1] = cast(u8) fg | (bg << 4);;
+        vga_screen[i * 2 + 1] = cast(u8) fg | (bg << 4);
 
         text_cursor += 1;
+    }
+}
+
+print :: (number: int, color: Vga_Color = 255) {
+    c := color;
+    if c == 255 c = theme.foreground;
+
+    negative: bool;
+    buffer: [30] u8 = ---;
+
+    _number := number;
+    if number < 0 _number *= -1;
+
+    for 0..buffer.count - 1 {
+        rem := _number % 10;
+        buffer[29 - it] =  #char "0" + cast(u8) rem;
+        _number /= 10;
+
+        if _number == 0 {
+            result: string = ---;
+            result.data = buffer.data + 29 - it;
+            result.count = it + 1;
+            print(result, color);
+            return;
+        }
     }
 }
 
@@ -280,9 +343,17 @@ print_hex :: (number: $T) {
 clear_screen :: () {
     for 0..vga_columns * vga_rows - 1 {
         vga_screen[it * 2]     = 0;
-        vga_screen[it * 2 + 1] = screen_color;
+        vga_screen[it * 2 + 1] = get_attribute();
     }
     text_cursor = 0;
+}
+
+theme: struct {
+    background : Vga_Color = .BLACK;
+    foreground : Vga_Color = .WHITE;
+    normal     : Vga_Color = .CYAN;
+    highlight  : Vga_Color = .LIGHT_CYAN;
+    accent     : Vga_Color = .RED;
 }
 
 Vga_Registers :: enum u16 {
@@ -354,6 +425,11 @@ Vga_Color :: enum u8 {
 
 
 
+cmos_format: struct {
+    bcd_mode: bool;
+    twenty_four_h: bool;
+}
+
 Cmos_Ports :: enum u16 {
     ADDRESS :: 0x70;
     DATA    :: 0x71;
@@ -368,14 +444,29 @@ Cmos_Registers :: enum u8 {
     MONTH            :: 0x08;
     YEAR             :: 0x09;
     CENTURY          :: 0x32;
+    STATUS_REG_B     :: 0x0b;
 }
 
-cmos_read :: (register: Cmos_Registers) -> u8 {
+cmos_init :: () {
+    status := cmos_read(.STATUS_REG_B);
+    cmos_format.bcd_mode      = (status & 0b10 > 0);
+    cmos_format.twenty_four_h =  status & 0b01 > 0;
+}
+
+cmos_read :: ($register: Cmos_Registers) -> u8 {
     using Cmos_Ports;
 
     port_write(xx ADDRESS, xx register);
-    wait(1);
-    return port_read(xx DATA);
+    io_delay();
+    result := port_read(xx DATA);
+
+    #if register != .STATUS_REG_B {
+        if cmos_format.bcd_mode {
+            result = (result & 0xf) + (result / 16) * 10;
+        }
+    }
+
+    return result;
 }
 
 months :: string.[
@@ -451,10 +542,12 @@ gol :: () {
     for 0..count - 1 {
         c := vga_screen[it * 2];
         buffer_a[it] = xx (c != 0 && c != #char " ");
-        if buffer_a[it] > 0 vga_screen[it * 2 + 1] = 0x00;
-        else                vga_screen[it * 2 + 1] = 0xff;
+        if buffer_a[it] > 0 vga_screen[it * 2 + 1] = 0x0f;
+        else                vga_screen[it * 2 + 1] = 0xf0;
+
+        wait(3);
     }
-    wait(10);
+    wait(10000);
 
     read :: (x: int, y: int) -> bool #expand {
         if y < 0 || y > height-1 || x < 0 || x > width-1 return false;
@@ -486,13 +579,13 @@ gol :: () {
         }
 
         for 0..count - 1 {
-            if buffer_b[it] > 0 vga_screen[it * 2 + 1] = 0x00;
-            else                vga_screen[it * 2 + 1] = 0xff;
+            if buffer_b[it] > 0 vga_screen[it * 2 + 1] = 0x0f;
+            else                vga_screen[it * 2 + 1] = 0xf0;
         }
 
         temp := buffer_a;
         buffer_a = buffer_b;
         buffer_b = temp;
-        wait(2);
+        wait(600);
     }
 }
