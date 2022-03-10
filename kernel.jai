@@ -170,7 +170,7 @@ pic_enable_irq :: (irq: u8) {
     using Pic_Port;
     port: u8 = xx MASTER_DATA;
 
-    if irq > 7 {
+    if irq >= 8 {
         irq -= 8;
         port = xx SLAVE_DATA;
     }
@@ -337,7 +337,6 @@ print_hex :: (number: $T) {
         vga_screen[(text_cursor + size * 2 - it) * 2 - 2] = table[index];
     }
     text_cursor += size * 2;
-    // text_cursor -= 1;
 }
 
 clear_screen :: () {
