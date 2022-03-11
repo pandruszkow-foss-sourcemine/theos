@@ -20,15 +20,39 @@ kernel_entry :: () {
     // }
 
     cmos_init();
-    welcome_screen();
-
+    pci_scan_all_devices();
     idt_init();
     pic_init();
+
+    welcome_screen();
+
     enable_ps2_keyboard();
 
     wait(50000);
     gol();
     while true {};
+}
+
+out :: ($T: Type, port: u16, value: T) {
+    #asm {
+        port  === d;
+        value === a;
+    }
+    #if T == u8  #asm { out.b port, value; }
+    #if T == u16 #asm { out.w port, value; }
+    #if T == u32 #asm { out.d port, value; }
+}
+
+in :: ($T: Type, port: u16) -> T {
+    value: T;    
+    #asm {
+        port  === d;
+        value === a;
+    }
+    #if T == u8  #asm { in.b value, port; }
+    #if T == u16 #asm { in.w value, port; }
+    #if T == u32 #asm { in.d value, port; }
+    return value;
 }
 
 port_write :: (port: u16, value: u8) {
@@ -91,12 +115,15 @@ Idt_Entry :: struct {
     offset_2: u16;
     offset_3: u32;
     reserved: u32;
-} #no_padding
+}
 
 idt_desc: struct {
     limit: u16;
     base:  *void #align 2;
 }
+
+#assert(size_of(Idt_Entry)          == 16);
+#assert(size_of(type_of(idt_desc))  == 10);
 
 idt: [0x100] Idt_Entry;
 
@@ -265,6 +292,7 @@ welcome_screen :: () {
     print(COMPILER_VERSION, theme.accent);
     print(".\n");
 }
+
 
 
 vga_columns :: 80;
@@ -587,4 +615,89 @@ gol :: () {
         buffer_b = temp;
         wait(600);
     }
+}
+
+
+
+PCI_MAX_BUSES :: 256;
+PCI_MAX_DEVICES :: 32;
+PCI_VENDOR_NO_DEVICE :: 0xffff;
+
+Pci_Device :: struct {
+    bus: u32;
+    index: u32;
+    header: Pci_Header;
+}
+
+Pci_Class_Code :: enum {
+    MASS_STORAGE             :: 0x1;
+    NETWORK                  :: 0x2;
+    DISPLAY_DEVICE           :: 0x3;
+    MULTIMEDIA               :: 0x4;
+    MEMORY_CONTROLLER        :: 0x5;
+    BRIDGE                   :: 0x6;
+    COMMUNICATION_CONTROLLER :: 0x7;
+    BASE_SYSTEM_PERIPHERAL   :: 0x8;
+    INPUT_DEVICE             :: 0x9;
+    DOCKING_STATION          :: 0xa;
+    PROCESSOR                :: 0xb;
+    SERIAL_BUS_CONTROLLER    :: 0xc;
+    WIRELESS_CONTROLLER      :: 0xd;
+}
+
+pci_devices: [PCI_MAX_BUSES * PCI_MAX_DEVICES] Pci_Device;
+pci_device_count: int;
+
+pci_scan_all_devices :: () {
+    for bus: 0..PCI_MAX_BUSES-1 {
+        for index: 0..PCI_MAX_DEVICES-1 {
+            header := pci_read_header(xx bus, xx index, 0);
+            if header.vendor_id == PCI_VENDOR_NO_DEVICE continue;
+
+            device: Pci_Device = ---;
+            device.bus    = xx bus;
+            device.index  = xx index;
+            device.header = header;
+            pci_devices[pci_device_count] = device;
+
+            pci_device_count += 1;
+        }
+    }
+}
+
+Pci_Port :: enum {
+    CONFIG_ADDRESS :: 0xcf8;
+    CONFIG_DATA    :: 0xcfc;
+}
+
+Pci_Header :: struct {
+    vendor_id:   u16;
+    device_id:   u16;
+    status:      u16;
+    command:     u16;
+    revision_id: u8;
+    prog_if:     u8;
+    subclass:    u8;
+    class_code:  u8;
+}
+
+pci_read_header :: (bus: u32, device: u32, function: u32) -> Pci_Header {
+    address: u32;
+    address |= function << 8;
+    address |= device   << 11;
+    address |= bus      << 16;
+    address |= 1        << 31;
+
+    using Pci_Port;
+    header: Pci_Header = ---;
+
+    for 0..size_of(Pci_Header) / 4 - 1 {
+        offset: u32 = xx (it * 4);
+
+        out(u32, xx CONFIG_ADDRESS, address | offset);
+
+        register_value := in(u32, xx CONFIG_DATA);
+        << (cast(*u32) *header + it) = register_value;
+    }
+    return header;
 }
