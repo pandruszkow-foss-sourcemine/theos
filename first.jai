@@ -236,7 +236,6 @@ assemble :: () -> bool {
     options.warnings |= .ALL;
 
     array_add(*options.include, ".build/");
-
     success, error_code, stdout, stderr := run_nasm(options);
 
     if !success {
@@ -244,11 +243,11 @@ assemble :: () -> bool {
         return false;
     }
 
-    write_string(stderr);
     write_string(stdout);
 
     if error_code {
         write_string("\nAssembly error:\n");
+        write_string(stderr);
         return false;
     } else {
         write_string("Assembly success!\n");

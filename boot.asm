@@ -44,7 +44,7 @@ start:
 .greeting: db 11, 'Hello world'
 .boot_drive: db 0
 
-%include ".build/generated.asm"
+%include "generated.asm"
 %include "long.asm"
 
 [bits 16]
@@ -78,24 +78,25 @@ write_string:
 .line: db 0
 
 disk_address_packet:
-  .size:       db 10h
-  .reserved:   db 0
-  .sectors:    dw 0
-  .buffer:     dw 0
-  .segment:    dw 0
-  .source_lba: dq 1
+  .size:        db 10h
+  .reserved:    db 0
+  .num_sectors: dw 0
+  .buffer:      dw 0
+  .segment:     dw 0
+  .source_lba:  dq 1
 
 load_kernel:
     pusha
 
-    mov word [disk_address_packet.sectors], kernel_sectors
-    mov word [disk_address_packet.buffer],  kernel_start_address
+    mov word [disk_address_packet.num_sectors], kernel_sectors
+    mov word [disk_address_packet.buffer],      kernel_start_address
 
     ; === Point DS:SI at address packet ===
     xor ax, ax
     mov ds, ax
     mov si, disk_address_packet
 
+    ; === Call BIOS extended read ===
     mov dl, [start.boot_drive]
     mov ah, dbs_ext_read
     mov al, 0
@@ -120,27 +121,22 @@ long_mode_start:
     mov edi, [eax]
 
     ; === Source address ===
-    add eax, 4
-    mov esi, [eax]
+    mov esi, [eax + 4]
 
     ; === Clear ===
-    add eax, 4
-    mov ecx, [eax]
+    mov ecx, [eax + 8]
 
     push rax
-    push rcx
     push rdi
 
     xor eax, eax
     rep stosq
 
     pop rdi
-    pop rcx
     pop rax
 
     ; === Copy ===
-    add eax, 4
-    mov ecx, [eax]
+    mov ecx, [eax + 12]
     rep movsq
 
     inc ebx

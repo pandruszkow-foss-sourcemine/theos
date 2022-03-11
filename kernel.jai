@@ -5,24 +5,15 @@ cpu: Cpu_X86;
 
 #program_export
 kernel_entry :: () {
-    hide_vga_cursor();
-    vga_attribute(0x10, 3, set = false);
-    random_seed = rdtsc();
-
-    // while true {
-    //     theme.background = xx random() & 0xf;
-    //     theme.normal = xx random() & 0xf;
-    //     theme.highlight = xx random() & 0xf;
-    //     theme.accent = xx random() & 0xf;
-    //     theme.foreground = xx random() & 0xf;
-    //     welcome_screen();
-    //     wait(20000);
-    // }
 
     cmos_init();
     pci_scan_all_devices();
     idt_init();
     pic_init();
+
+    hide_vga_cursor();
+    vga_attribute(0x10, 3, set = false);
+    random_seed = rdtsc();
 
     welcome_screen();
 
@@ -383,7 +374,7 @@ theme: struct {
     accent     : Vga_Color = .RED;
 }
 
-Vga_Registers :: enum u16 {
+Vga_Register :: enum u16 {
     ATTRIBUTE_ADDRESS :: 0x3c0;
     DATA_READ         :: 0x3c1;
     DAC_PALETTE_MASK  :: 0x3c6;
@@ -397,14 +388,14 @@ Vga_Registers :: enum u16 {
 }
 
 hide_vga_cursor :: () {
-    using Vga_Registers;
+    using Vga_Register;
 
     port_write(xx CRT_CONTROL_INDEX, 0x0a);
     port_write(xx CRT_CONTROL_DATA,  0x20);
 }
 
 vga_set_palette_entry :: (index: u8, red: u8, green: u8, blue: u8) {
-    using Vga_Registers;
+    using Vga_Register;
 
     port_write(xx DAC_PALETTE_MASK, 0xff);
     port_write(xx DAC_ADDRESS_WRITE, index);
@@ -414,7 +405,7 @@ vga_set_palette_entry :: (index: u8, red: u8, green: u8, blue: u8) {
 }
 
 vga_attribute :: (register_name: u8, bit: u8, set: bool = true) {
-    using Vga_Registers;
+    using Vga_Register;
 
     PAS:  u8 = 1 << 5;
     mask: u8 = xx 1 << bit;
@@ -457,12 +448,12 @@ cmos_format: struct {
     twenty_four_h: bool;
 }
 
-Cmos_Ports :: enum u16 {
+Cmos_Port :: enum u16 {
     ADDRESS :: 0x70;
     DATA    :: 0x71;
 }
 
-Cmos_Registers :: enum u8 {
+Cmos_Register :: enum u8 {
     SECONDS          :: 0x00;
     MINUTES          :: 0x02;
     HOURS            :: 0x04;
@@ -471,23 +462,25 @@ Cmos_Registers :: enum u8 {
     MONTH            :: 0x08;
     YEAR             :: 0x09;
     CENTURY          :: 0x32;
+    STATUS_REG_A     :: 0x0a;
     STATUS_REG_B     :: 0x0b;
+    STATUS_REG_C     :: 0x0c;
 }
 
 cmos_init :: () {
     status := cmos_read(.STATUS_REG_B);
-    cmos_format.bcd_mode      = (status & 0b10 > 0);
-    cmos_format.twenty_four_h =  status & 0b01 > 0;
+    cmos_format.bcd_mode      = status & 0b10 > 0;
+    cmos_format.twenty_four_h = status & 0b01 > 0;
 }
 
-cmos_read :: ($register: Cmos_Registers) -> u8 {
-    using Cmos_Ports;
+cmos_read :: ($register: Cmos_Register) -> u8 {
+    using Cmos_Port;
 
     port_write(xx ADDRESS, xx register);
     io_delay();
     result := port_read(xx DATA);
 
-    #if register != .STATUS_REG_B {
+    #if register < .STATUS_REG_A {
         if cmos_format.bcd_mode {
             result = (result & 0xf) + (result / 16) * 10;
         }
