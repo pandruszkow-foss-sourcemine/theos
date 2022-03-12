@@ -137,13 +137,118 @@ interrupts: [] struct { message: string; slot: int; } = .[
 
         push_context header_printer {
             elf := read_entire_file(".build/kernel_elf");
-            using elf_header := cast(*Elf64_Ehdr) elf.data;
+            elf_header := cast(*Elf64_Ehdr) elf.data;
+
+            get_section_header :: (index: int) -> *Elf64_Shdr #expand {
+                base := `elf.data + `elf_header.e_shoff;
+                base +=  index    * `elf_header.e_shentsize; //`
+                header := cast(*Elf64_Shdr) base;
+                return header;
+            }
 
             print("Elf header: %\n\n", << elf_header);
 
             PAGE_TABLE_ADDRESS   :: 0x8000;
             PAGE_TABLE_SIZE      :: 0x4000;
             KERNEL_START_ADDRESS :: PAGE_TABLE_ADDRESS + PAGE_TABLE_SIZE;
+
+            Patch :: struct {
+                source: string;
+                target: string;
+                virtual_address: int;
+                plt_index: int;
+            }
+
+            patches := Patch.[
+                .{"jai_memset", "memset", 0, 0},
+                .{"jai_memcpy", "memcpy", 0, 0},
+            ];
+
+            for 0..elf_header.e_shnum - 1 {
+                header := get_section_header(it);
+                if header.sh_type != SHT_SYMTAB continue;
+
+                string_table_section_header := get_section_header(header.sh_link);
+                table := elf.data + string_table_section_header.sh_offset;
+
+                entry_count := header.sh_size / header.sh_entsize;
+                assert(header.sh_size % header.sh_entsize == 0);
+
+                for * patch: patches {
+                    for 0..entry_count - 1 {
+                        base := elf.data + header.sh_offset;
+                        base += it * header.sh_entsize;
+                        symbol := cast(*Elf64_Sym) base;
+
+                        name := to_string(table + symbol.st_name);
+                        if starts_with(name, patch.source) {
+                            patch.virtual_address = xx symbol.st_value;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            memset_plt_index: int;
+            for 0..elf_header.e_shnum - 1 {
+                header := get_section_header(it);
+                if header.sh_type != SHT_RELA continue;
+
+                {
+                    section_name_table_header := get_section_header(elf_header.e_shstrndx);
+                    name := to_string(elf.data + section_name_table_header.sh_offset + header.sh_name);
+                    if name != ".rela.plt" continue;
+                }
+
+                symbol_table_section_header := get_section_header(header.sh_link);
+                string_table_section_header := get_section_header(symbol_table_section_header.sh_link);
+
+                symbol_table := elf.data + symbol_table_section_header.sh_offset;
+                string_table := elf.data + string_table_section_header.sh_offset;
+
+                entry_count := header.sh_size / header.sh_entsize;
+
+                for * patch: patches {
+                    for 0..entry_count - 1 {
+                        base := elf.data + header.sh_offset;
+                        base += it * header.sh_entsize;
+                        rela := cast(*Elf64_Rela) base;
+
+                        index := (rela.r_info >> 32);
+                        symbol := cast(*Elf64_Sym) (elf.data + symbol_table_section_header.sh_offset + index * symbol_table_section_header.sh_entsize);
+                        name := to_string(string_table + symbol.st_name);
+
+                        if name == patch.target {
+                            patch.plt_index = xx it;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            for 0..elf_header.e_shnum - 1 {
+                header := get_section_header(it);
+                if header.sh_type != SHT_PROGBITS continue;
+
+                {
+                    section_name_table_header := get_section_header(elf_header.e_shstrndx);
+                    name := to_string(elf.data + section_name_table_header.sh_offset + header.sh_name);
+                    if name != ".plt" continue;
+                }
+
+                PLT_ENTRY_SIZE :: 16;
+
+                for patch: patches {
+                    plt_offset := PLT_ENTRY_SIZE * (patch.plt_index + 1);
+                    patch_target           := plt_offset + xx header.sh_offset;
+                    source_virtual_address := plt_offset + xx header.sh_addr + 5;
+
+                    jump :=  patch.virtual_address - source_virtual_address;
+
+                    << (elf.data + patch_target + 0) = 0xe9;
+                    << (cast(*s32) (elf.data + patch_target + 1)) = xx jump;
+                }
+            }
 
             generated_asm: String_Builder;
             append(*generated_asm, "\n");
@@ -179,25 +284,6 @@ interrupts: [] struct { message: string; slot: int; } = .[
 
             append(*generated_asm, tprint("  .count: dd 0x%\n\n", count));
             append(*generated_asm, tprint("kernel_sectors equ 0x%\n", kernel_size / 512 + 1));
-
-            if false for 0..elf_header.e_shnum - 1 {
-                base := elf.data + elf_header.e_shoff;
-                base += it       * elf_header.e_shentsize;
-                header := cast(*Elf64_Shdr) base;
-
-                if header.sh_type != SHT_SYMTAB continue;
-
-                entry_count := header.sh_size / header.sh_entsize;
-                assert(header.sh_size % header.sh_entsize == 0);
-
-                for 0..entry_count - 1 {
-                    base := elf.data + header.sh_offset;
-                    base += it * header.sh_entsize;
-                    symbol := cast(*Elf64_Sym) base;
-
-                    // print("Symbol: \n%\n", << symbol);
-                }
-            }
 
             write_entire_file(".build/generated.asm", builder_to_string(*generated_asm));
         }

@@ -1,5 +1,5 @@
 
-#load "modules/Machine_X64.jai";
+#import "Machine_X64";
 
 cpu: Cpu_X86;
 
@@ -11,7 +11,9 @@ kernel_entry :: () {
     idt_init();
     pic_init();
 
-    hide_vga_cursor();
+    cpu = get_cpu_info();
+
+    vga_hide_cursor();
     vga_attribute(0x10, 3, set = false);
     random_seed = rdtsc();
 
@@ -24,7 +26,21 @@ kernel_entry :: () {
     while true {};
 }
 
-out :: ($T: Type, port: u16, value: T) {
+jai_memset :: (target: *u8, value: s32, count: u64) -> *void #c_call {
+    for 0..count-1 {
+        target[it] = cast(u8) value;
+    }
+    return target;
+}
+
+jai_memcpy :: (dest: *u8, src: *u8, count: u64) -> *void #c_call {
+    for 0..count-1 {
+        dest[it] = src[it];
+    }
+    return dest;
+}
+
+out :: (port: u16, value: $T) {
     #asm {
         port  === d;
         value === a;
@@ -34,7 +50,7 @@ out :: ($T: Type, port: u16, value: T) {
     #if T == u32 #asm { out.d port, value; }
 }
 
-in :: ($T: Type, port: u16) -> T {
+in :: (port: u16, $T: Type = u32) -> T {
     value: T;    
     #asm {
         port  === d;
@@ -258,7 +274,6 @@ welcome_screen :: () {
 
     theme.normal = old_foreground;
 
-    get_cpu_info(*cpu);
     ti := type_info(x86_Feature_Flag);
 
     print("      Supported CPU features: -------------------------------------------", theme.foreground);
@@ -387,7 +402,7 @@ Vga_Register :: enum u16 {
     INPUT_STATUS      :: 0x3da;
 }
 
-hide_vga_cursor :: () {
+vga_hide_cursor :: () {
     using Vga_Register;
 
     port_write(xx CRT_CONTROL_INDEX, 0x0a);
@@ -407,7 +422,7 @@ vga_set_palette_entry :: (index: u8, red: u8, green: u8, blue: u8) {
 vga_attribute :: (register_name: u8, bit: u8, set: bool = true) {
     using Vga_Register;
 
-    PAS:  u8 = 1 << 5;
+    PAS : u8 :    1 << 5;
     mask: u8 = xx 1 << bit;
 
     port_read(xx INPUT_STATUS);
@@ -616,7 +631,7 @@ PCI_MAX_BUSES :: 256;
 PCI_MAX_DEVICES :: 32;
 PCI_VENDOR_NO_DEVICE :: 0xffff;
 
-Pci_Device :: struct {
+Pci_Device_Info :: struct {
     bus: u32;
     index: u32;
     header: Pci_Header;
@@ -638,7 +653,7 @@ Pci_Class_Code :: enum {
     WIRELESS_CONTROLLER      :: 0xd;
 }
 
-pci_devices: [PCI_MAX_BUSES * PCI_MAX_DEVICES] Pci_Device;
+pci_devices: [PCI_MAX_BUSES * PCI_MAX_DEVICES] Pci_Device_Info;
 pci_device_count: int;
 
 pci_scan_all_devices :: () {
@@ -647,7 +662,7 @@ pci_scan_all_devices :: () {
             header := pci_read_header(xx bus, xx index, 0);
             if header.vendor_id == PCI_VENDOR_NO_DEVICE continue;
 
-            device: Pci_Device = ---;
+            device: Pci_Device_Info = ---;
             device.bus    = xx bus;
             device.index  = xx index;
             device.header = header;
@@ -685,12 +700,23 @@ pci_read_header :: (bus: u32, device: u32, function: u32) -> Pci_Header {
     header: Pci_Header = ---;
 
     for 0..size_of(Pci_Header) / 4 - 1 {
-        offset: u32 = xx (it * 4);
+        offset := cast(u32) it * 4;
 
-        out(u32, xx CONFIG_ADDRESS, address | offset);
+        out(xx CONFIG_ADDRESS, address | offset);
+        register_value := in(xx CONFIG_DATA);
 
-        register_value := in(u32, xx CONFIG_DATA);
         << (cast(*u32) *header + it) = register_value;
     }
     return header;
+}
+
+
+
+
+
+
+
+
+Page_Directory_Entry :: struct {
+    
 }
