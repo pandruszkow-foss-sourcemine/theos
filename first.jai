@@ -160,8 +160,8 @@ interrupts: [] struct { message: string; slot: int; } = .[
             }
 
             patches := Patch.[
-                .{"jai_memset", "memset", 0, 0},
-                .{"jai_memcpy", "memcpy", 0, 0},
+                .{"crt_memset", "memset", 0, 0},
+                .{"crt_memcpy", "memcpy", 0, 0},
             ];
 
             for 0..elf_header.e_shnum - 1 {
@@ -189,7 +189,6 @@ interrupts: [] struct { message: string; slot: int; } = .[
                 }
             }
 
-            memset_plt_index: int;
             for 0..elf_header.e_shnum - 1 {
                 header := get_section_header(it);
                 if header.sh_type != SHT_RELA continue;
@@ -215,7 +214,7 @@ interrupts: [] struct { message: string; slot: int; } = .[
                         rela := cast(*Elf64_Rela) base;
 
                         index := (rela.r_info >> 32);
-                        symbol := cast(*Elf64_Sym) (elf.data + symbol_table_section_header.sh_offset + index * symbol_table_section_header.sh_entsize);
+                        symbol := cast(*Elf64_Sym) (symbol_table + index * symbol_table_section_header.sh_entsize);
                         name := to_string(string_table + symbol.st_name);
 
                         if name == patch.target {
@@ -243,9 +242,9 @@ interrupts: [] struct { message: string; slot: int; } = .[
                     patch_target           := plt_offset + xx header.sh_offset;
                     source_virtual_address := plt_offset + xx header.sh_addr + 5;
 
-                    jump :=  patch.virtual_address - source_virtual_address;
+                    jump := patch.virtual_address - source_virtual_address;
 
-                    << (elf.data + patch_target + 0) = 0xe9;
+                    elf.data[patch_target] = 0xe9;
                     << (cast(*s32) (elf.data + patch_target + 1)) = xx jump;
                 }
             }

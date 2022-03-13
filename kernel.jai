@@ -6,18 +6,21 @@ cpu: Cpu_X86;
 #program_export
 kernel_entry :: () {
 
-    cmos_init();
-    pci_scan_all_devices();
     idt_init();
     pic_init();
+    cmos_init();
 
+    pci_scan_all_devices();
     cpu = get_cpu_info();
 
     vga_hide_cursor();
     vga_attribute(0x10, 3, set = false);
     random_seed = rdtsc();
 
+    clear_screen();
+
     welcome_screen();
+    page_table_init();
 
     enable_ps2_keyboard();
 
@@ -26,14 +29,14 @@ kernel_entry :: () {
     while true {};
 }
 
-jai_memset :: (target: *u8, value: s32, count: u64) -> *void #c_call {
+crt_memset :: (target: *u8, value: s32, count: u64) -> *void #c_call {
     for 0..count-1 {
         target[it] = cast(u8) value;
     }
     return target;
 }
 
-jai_memcpy :: (dest: *u8, src: *u8, count: u64) -> *void #c_call {
+crt_memcpy :: (dest: *u8, src: *u8, count: u64) -> *void #c_call {
     for 0..count-1 {
         dest[it] = src[it];
     }
@@ -246,11 +249,12 @@ welcome_screen :: () {
 
     print("\n\n");
     print(TITLE);
-    print("\n\n");
+    print("\n");
 
 
     old_foreground := theme.normal;
     theme.normal = theme.foreground;
+    print("      Hello, sailor.\n");
     print("      Boot time is ");
 
     print(months[cmos_read(.MONTH) - 1]);
@@ -520,10 +524,6 @@ months :: string.[
 ];
 
 
-
-
-
-
 /*
 p :: (value: u64) -> bool {
     return (random(*seed) % value) == 0;
@@ -586,13 +586,13 @@ gol :: () {
 
     read :: (x: int, y: int) -> bool #expand {
         if y < 0 || y > height-1 || x < 0 || x > width-1 return false;
-        return `buffer_a[x + y * width] > 0; // `
+        return buffer_a[x + y * width] > 0;
     }
 
     write :: (x: int, y: int, value: bool) #expand {
         index := x + y * width;
-        if value `buffer_b[index] = 1;
-        else `buffer_b[index] = 0;
+        if value buffer_b[index] = 1;
+        else buffer_b[index] = 0;
     }
 
     while true {
@@ -712,11 +712,30 @@ pci_read_header :: (bus: u32, device: u32, function: u32) -> Pci_Header {
 
 
 
+page_table: [0x200] u64 #align 0x1000;
+page_dir:   [0x200] u64 #align 0x1000;
+pdpt:       [0x200] u64 #align 0x1000;
+pml4:       [0x200] u64 #align 0x1000;
 
+Page_Table_Flags :: enum_flags u64 {
+    PRESENT         :: 1 << 0;
+    READ_WRITE      :: 1 << 1;
+    USER_SUPERVISOR :: 1 << 2;
+    WRITE_THROUGH   :: 1 << 3;
+    CACHE_DISABLE   :: 1 << 4;
+    ACCESSED        :: 1 << 5;
+    AVAILABLE       :: 1 << 6;
+    PAGE_SIZE       :: 1 << 7;
+    EXECUTE_DISABLE :: 1 << 63;
+}
 
+page_table_init :: () {
+    using Page_Table_Flags;
+    pml4    [0] = xx (cast(Page_Table_Flags) pdpt.data      ) | PRESENT | READ_WRITE;
+    pdpt    [0] = xx (cast(Page_Table_Flags) page_dir.data  ) | PRESENT | READ_WRITE;
+    page_dir[0] = xx (cast(Page_Table_Flags) page_table.data) | PRESENT | READ_WRITE;
 
-
-
-Page_Directory_Entry :: struct {
-    
+    for 0..page_table.count - 1 {
+        page_table[it] = xx (it * 0x1000);
+    }
 }
