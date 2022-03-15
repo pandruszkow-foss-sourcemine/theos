@@ -9,6 +9,7 @@ kernel_entry :: () {
     idt_init();
     pic_init();
     cmos_init();
+    page_table_init();
 
     pci_scan_all_devices();
     cpu = get_cpu_info();
@@ -16,16 +17,19 @@ kernel_entry :: () {
     vga_hide_cursor();
     vga_attribute(0x10, 3, set = false);
     random_seed = rdtsc();
-
-    clear_screen();
+    // enable_ps2_keyboard();
 
     welcome_screen();
-    page_table_init();
+    // pci_print_device_list();
 
-    enable_ps2_keyboard();
+    // for 0..255 {
+    //     if it % 16 == 0 print("\n");
+    //     else print(" ");
+    //     print_hex(buffer[it], false);
+    // }
 
-    wait(50000);
-    gol();
+    // wait(50000);
+    // gol();
     while true {};
 }
 
@@ -212,9 +216,8 @@ pic_enable_irq :: (irq: u8) {
         port = xx SLAVE_DATA;
     }
 
-    mask: u8 = xx ~(1 << irq);
+    mask:  u8 = xx ~(1 << irq);
     value: u8 = port_read(port) & mask;
-
     port_write(port, value);
 }
 
@@ -233,14 +236,14 @@ enable_ps2_keyboard :: () {
 
 
 TITLE :: #string END
-                 /##     /##                                                  
-                | ##    | ##                                                  
-               /######  | #######   /######   /######   /#######              
-              |_  ##_/  | ##__  ## /##__  ## /##__  ## /##_____/              
-                | ##    | ##  \ ##| ########| ##  \ ##|  ######               
-                | ## /##| ##  | ##| ##_____/| ##  | ## \____  ##              
-                |  ####/| ##  | ##|  #######|  ######/ /#######/              
-                 \___/  |__/  |__/ \_______/ \______/ |_______/               
+        /##     /##                                                  
+       | ##    | ##                                                  
+      /######  | #######   /######   /######   /#######              
+     |_  ##_/  | ##__  ## /##__  ## /##__  ## /##_____/              
+       | ##    | ##  \ ##| ########| ##  \ ##|  ######               
+       | ## /##| ##  | ##| ##_____/| ##  | ## \____  ##              
+       |  ####/| ##  | ##|  #######|  ######/ /#######/              
+        \___/  |__/  |__/ \_______/ \______/ |_______/               
 END;
 
 
@@ -361,18 +364,20 @@ print :: (number: int, color: Vga_Color = 255) {
     }
 }
 
-print_hex :: (number: $T) {
+print_hex :: (number: $T, decorate := true) {
     #assert type_info(T).type == .INTEGER;
     size := #run type_info(T).runtime_size;
 
-    print("0x");
+    if decorate print("0x");
 
     table := "0123456789abcdef";
     for 0..size * 2 - 1 {
         index := number >> (it * 4);
         index &= 0xf;
 
-        vga_screen[(text_cursor + size * 2 - it) * 2 - 2] = table[index];
+        cur := (text_cursor + size * 2 - it - 1) * 2;
+        vga_screen[cur] = table[index];
+        vga_screen[cur + 1] = get_attribute();
     }
     text_cursor += size * 2;
 }
@@ -627,13 +632,16 @@ gol :: () {
 
 
 
-PCI_MAX_BUSES :: 256;
-PCI_MAX_DEVICES :: 32;
+PCI_MAX_BUSES        :: 256;
+PCI_MAX_DEVICES      :: 32;
+PCI_NUM_FUNCTIONS    :: 8;
 PCI_VENDOR_NO_DEVICE :: 0xffff;
+PCI_HEADER_TYPE_MULTIFUNCTION_BIT :: 0x80;
 
 Pci_Device_Info :: struct {
     bus: u32;
     index: u32;
+    function: u32;
     header: Pci_Header;
 }
 
@@ -644,33 +652,13 @@ Pci_Class_Code :: enum {
     MULTIMEDIA               :: 0x4;
     MEMORY_CONTROLLER        :: 0x5;
     BRIDGE                   :: 0x6;
-    COMMUNICATION_CONTROLLER :: 0x7;
-    BASE_SYSTEM_PERIPHERAL   :: 0x8;
+    COMMUNICATION            :: 0x7;
+    SYSTEM_PERIPHERAL        :: 0x8;
     INPUT_DEVICE             :: 0x9;
     DOCKING_STATION          :: 0xa;
     PROCESSOR                :: 0xb;
-    SERIAL_BUS_CONTROLLER    :: 0xc;
+    SERIAL_BUS               :: 0xc;
     WIRELESS_CONTROLLER      :: 0xd;
-}
-
-pci_devices: [PCI_MAX_BUSES * PCI_MAX_DEVICES] Pci_Device_Info;
-pci_device_count: int;
-
-pci_scan_all_devices :: () {
-    for bus: 0..PCI_MAX_BUSES-1 {
-        for index: 0..PCI_MAX_DEVICES-1 {
-            header := pci_read_header(xx bus, xx index, 0);
-            if header.vendor_id == PCI_VENDOR_NO_DEVICE continue;
-
-            device: Pci_Device_Info = ---;
-            device.bus    = xx bus;
-            device.index  = xx index;
-            device.header = header;
-            pci_devices[pci_device_count] = device;
-
-            pci_device_count += 1;
-        }
-    }
 }
 
 Pci_Port :: enum {
@@ -679,14 +667,57 @@ Pci_Port :: enum {
 }
 
 Pci_Header :: struct {
-    vendor_id:   u16;
-    device_id:   u16;
-    status:      u16;
-    command:     u16;
-    revision_id: u8;
-    prog_if:     u8;
-    subclass:    u8;
-    class_code:  u8;
+    vendor_id:       u16;
+    device_id:       u16;
+    status:          u16;
+    command:         u16;
+    revision_id:     u8;
+    prog_if:         u8;
+    subclass:        u8;
+    class_code:      u8;
+    cache_line_size: u8;
+    latency_timer:   u8;
+    header_type:     u8;
+    bist:            u8;
+}
+
+pci_devices: [PCI_MAX_BUSES * PCI_MAX_DEVICES] Pci_Device_Info;
+pci_device_count: int;
+pci_devices_scanned: bool;
+
+pci_scan_all_devices :: () {
+    if pci_devices_scanned return;
+
+    AddDevice :: (function: int) #expand {
+        device: Pci_Device_Info = ---;
+        device.bus       = xx `bus;
+        device.index     = xx `index;
+        device.function  = xx function;
+        device.header    = `header; // `
+
+        pci_devices[pci_device_count] = device;
+        pci_device_count += 1;
+    }
+
+    for bus: 0..PCI_MAX_BUSES-1 {
+        for index: 0..PCI_MAX_DEVICES-1 {
+            header := pci_read_header(xx bus, xx index, 0);
+            if header.vendor_id == PCI_VENDOR_NO_DEVICE continue;
+
+            AddDevice(0);
+
+            if (header.header_type & PCI_HEADER_TYPE_MULTIFUNCTION_BIT) {
+                for function: 1..PCI_NUM_FUNCTIONS - 1 {
+                    header := pci_read_header(xx bus, xx index, xx function);
+                    if header.vendor_id == PCI_VENDOR_NO_DEVICE continue;
+
+                    AddDevice(function);
+                }
+            }
+        }
+    }
+
+    pci_devices_scanned = true;
 }
 
 pci_read_header :: (bus: u32, device: u32, function: u32) -> Pci_Header {
@@ -710,6 +741,30 @@ pci_read_header :: (bus: u32, device: u32, function: u32) -> Pci_Header {
     return header;
 }
 
+pci_print_device_list :: () {
+    if !pci_devices_scanned pci_scan_all_devices();
+
+    ti := type_info(Pci_Class_Code);
+    for 0..pci_device_count - 1 {
+        device_info := pci_devices[it];
+
+        print("    PCI device, class ");
+        name := ti.names[device_info.header.class_code - 1];
+        print(name);
+        for 0..15 - name.count print(" ");
+        print("subclass ");
+        print_hex(device_info.header.subclass);
+
+        print(" | Address ");
+        print(device_info.bus);
+        print(":");
+        print(device_info.index);
+        print(":");
+        print(device_info.function);
+        print("\n");
+    }
+}
+
 
 
 page_table: [0x200] u64 #align 0x1000;
@@ -731,11 +786,103 @@ Page_Table_Flags :: enum_flags u64 {
 
 page_table_init :: () {
     using Page_Table_Flags;
-    pml4    [0] = xx (cast(Page_Table_Flags) pdpt.data      ) | PRESENT | READ_WRITE;
-    pdpt    [0] = xx (cast(Page_Table_Flags) page_dir.data  ) | PRESENT | READ_WRITE;
-    page_dir[0] = xx (cast(Page_Table_Flags) page_table.data) | PRESENT | READ_WRITE;
+    pml4    [0] = cast(u64) (xx pdpt.data)       | PRESENT | READ_WRITE;
+    pdpt    [0] = cast(u64) (xx page_dir.data)   | PRESENT | READ_WRITE;
+    page_dir[0] = cast(u64) (xx page_table.data) | PRESENT | READ_WRITE;
 
     for 0..page_table.count - 1 {
         page_table[it] = xx (it * 0x1000);
     }
+}
+
+
+
+Ata_Status :: enum_flags u8 {
+    ERROR               :: 0x1;
+    INDEX               :: 0x2;
+    CORRECTED_DATA      :: 0x4;
+    TRANSFER_REQUESTED  :: 0x8;
+    SEEK_COMPLETE       :: 0x10;
+    DEVICE_FAULT        :: 0x20;
+    READY               :: 0x40;
+    BUSY                :: 0x80;
+}
+
+Ata_Error :: enum_flags {
+    ADDRESS_MARK_NOT_FOUND :: 0x1;
+    TRACK_ZERO_NOT_FOUND   :: 0x2;
+    ABORTED                :: 0x4;
+    MEDIA_CHANGE_REQUEST   :: 0x8;
+    ID_NOT_FOUND           :: 0x10;
+    MEDIA_CHANGED          :: 0x20;
+    DATA_ERROR             :: 0x40;
+    BAD_BLOCK              :: 0x80;
+}
+
+Ata_Port :: enum u16 {
+    DATA          :: 0x1f0;
+    FEATURE       :: 0x1f1;
+    SECTOR_COUNT  :: 0x1f2;
+    LBA_LOW       :: 0x1f3;
+    LBA_MID       :: 0x1f4;
+    LBA_HIGH      :: 0x1f5;
+    DRIVE_HEADER  :: 0x1f6;
+    COMMAND       :: 0x1f7;
+
+    IN_ERROR  :: 0x1f1;
+    IN_STATUS :: 0x1f7;
+}
+
+Ata_Command :: enum u8 {
+    READ    :: 0x20;
+    WRITE   :: 0x30;
+}
+
+ata_await_transfer_request :: () {
+    while true {
+        status: Ata_Status = xx port_read(xx Ata_Port.IN_STATUS);
+        if status & Ata_Status.TRANSFER_REQUESTED  break;
+    }
+}
+
+ata_get_error :: () -> Ata_Error {
+    return xx port_read(xx Ata_Port.IN_ERROR);
+}
+
+ata_pio_start :: (start_sector: u32, sector_count: u8) {
+    LBA_MODE :: 0b11100000;
+
+    using Ata_Port;
+    port_write(xx DRIVE_HEADER, cast(u8) (start_sector >> 24) | LBA_MODE);
+    port_write(xx SECTOR_COUNT, sector_count);
+
+    port_write(xx LBA_LOW,  cast(u8) (start_sector));
+    port_write(xx LBA_MID,  cast(u8) (start_sector >> 8));
+    port_write(xx LBA_HIGH, cast(u8) (start_sector >> 16));
+}
+
+ata_pio_read :: (buffer: *u16, start_sector: u32, sector_count: u8) -> Ata_Error {
+    using Ata_Port;
+
+    ata_pio_start(start_sector, sector_count);
+    port_write(xx COMMAND, xx Ata_Command.READ);
+    ata_await_transfer_request();
+
+    for 0..sector_count * 0x100-1 {
+        buffer[it] = in(xx DATA, u16);
+    }
+    return ata_get_error();
+}
+
+ata_pio_write :: (buffer: *u16, start_sector: u32, sector_count: u8) -> Ata_Error {
+    using Ata_Port;
+
+    ata_pio_start(start_sector, sector_count);
+    port_write(xx COMMAND, xx Ata_Command.WRITE);
+    ata_await_transfer_request();
+
+    for 0..sector_count * 0x100-1 {
+        out(xx DATA, buffer[it]);
+    }
+    return ata_get_error();
 }

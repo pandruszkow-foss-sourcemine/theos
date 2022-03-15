@@ -41,7 +41,7 @@ start:
     ; === Wait ===
     jmp $
 
-.greeting: db 11, 'Hello world'
+.greeting: db 12, 'Hello sailor'
 .boot_drive: db 0
 
 %include "generated.asm"
@@ -108,8 +108,8 @@ load_kernel:
 
 [bits 64]
 long_mode_start:
-
     xor ebx, ebx
+
   .loop:
     cmp dword ebx, [kernel_section_table.count]
     je .end

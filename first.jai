@@ -16,20 +16,28 @@
 }
 
 
+
 ISR_DECLARATION :: #string ISR
-isr_slot_0x% :: () {
+isr_slot_0x% :: () #c_call {
 
     frame: *Isr_Stack_Frame;
+    frame = cast(*Isr_Stack_Frame) *frame + 2;
     text_cursor = 0;
 
-    print("\n\n    AN EXCEPTION HAS OCCURED:\n=== % ===\n");
-    print("Interrupt frame: ====================\n");
-    print("RIP:   "); print_hex(frame.ip);    print("\n");
-    print("CS:    "); print_hex(frame.cs);    print("\n");
-    print("FLAGS: "); print_hex(frame.flags); print("\n");
-    print("SP:    "); print_hex(frame.sp);    print("\n");
-    print("SS:    "); print_hex(frame.ss);    print("\n");
-    print("=====================================\n");
+    c: Context;
+    push_context c {
+        clear_screen();
+
+        print("\n\n       AN EXCEPTION HAS OCCURED:  ");
+        print("%\n\n", theme.accent);
+        print("       Interrupt frame: =============\n");
+        print("       RIP:   "); print_hex(frame.ip);    print("\n");
+        print("       CS:    "); print_hex(frame.cs);    print("\n");
+        print("       FLAGS: "); print_hex(frame.flags); print("\n");
+        print("       SP:    "); print_hex(frame.sp);    print("\n");
+        print("       SS:    "); print_hex(frame.ss);    print("\n");
+        print("       ==============================\n");
+    }
 
     while true {}
 }
@@ -149,7 +157,7 @@ interrupts: [] struct { message: string; slot: int; } = .[
             print("Elf header: %\n\n", << elf_header);
 
             PAGE_TABLE_ADDRESS   :: 0x8000;
-            PAGE_TABLE_SIZE      :: 0x4000;
+            PAGE_TABLE_SIZE      :: 0x5000;
             KERNEL_START_ADDRESS :: PAGE_TABLE_ADDRESS + PAGE_TABLE_SIZE;
 
             Patch :: struct {
@@ -247,6 +255,7 @@ interrupts: [] struct { message: string; slot: int; } = .[
                     elf.data[patch_target] = 0xe9;
                     << (cast(*s32) (elf.data + patch_target + 1)) = xx jump;
                 }
+                break;
             }
 
             generated_asm: String_Builder;

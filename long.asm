@@ -49,7 +49,11 @@ SwitchToLongMode:
     lea eax, [es:di + 0x3000]         ; Put the address of the Page Table in to EAX.
     or eax, PAGE_PRESENT | PAGE_WRITE ; Or EAX with the flags - present flag, writeable flag.
     mov [es:di + 0x2000], eax         ; Store to value of EAX as the first PDE.
- 
+
+    lea eax, [es:di + 0x4000]         ; Put the address of the Page Table in to EAX.
+    or eax, PAGE_PRESENT | PAGE_WRITE ; Or EAX with the flags - present flag, writeable flag.
+    mov [es:di + 0x2008], eax         ; Store to value of EAX as the first PDE.
+
  
     push di                           ; Save DI for the time being.
     lea di, [di + 0x3000]             ; Point DI to the page table.
@@ -63,6 +67,23 @@ SwitchToLongMode:
     add di, 8
     cmp eax, 0x200000                 ; If we did all 2MiB, end.
     jb .LoopPageTable
+
+    pop di                            ; Restore DI.
+    push di                           ; Save DI for the time being.
+
+    
+    lea di, [di + 0x4000]             ; Point DI to the page table.
+    mov eax, PAGE_PRESENT | PAGE_WRITE    ; Move the flags into EAX - and point it to 0x0000.
+    add eax, 0x200000
+ 
+ 
+    ; Build the Page Table.
+.LoopPageTable2:
+    mov [es:di], eax
+    add eax, 0x1000
+    add di, 8
+    cmp eax, 0x400000                 ; If we did all 2MiB, end.
+    jb .LoopPageTable2
  
     pop di                            ; Restore DI.
  
