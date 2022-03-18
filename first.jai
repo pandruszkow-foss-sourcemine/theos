@@ -19,24 +19,12 @@
 
 ISR_DECLARATION :: #string ISR
 isr_slot_0x% :: () #c_call {
-
-    frame: *Isr_Stack_Frame;
-    frame = cast(*Isr_Stack_Frame) *frame + 2;
-    text_cursor = 0;
-
     c: Context;
     push_context c {
         clear_screen();
 
         print("\n\n       AN EXCEPTION HAS OCCURED:  ");
         print("%\n\n", theme.accent);
-        print("       Interrupt frame: =============\n");
-        print("       RIP:   "); print_hex(frame.ip);    print("\n");
-        print("       CS:    "); print_hex(frame.cs);    print("\n");
-        print("       FLAGS: "); print_hex(frame.flags); print("\n");
-        print("       SP:    "); print_hex(frame.sp);    print("\n");
-        print("       SS:    "); print_hex(frame.ss);    print("\n");
-        print("       ==============================\n");
     }
 
     while true {}
@@ -81,6 +69,29 @@ interrupts: [] struct { message: string; slot: int; } = .[
     }
     #if OS != .LINUX return;
 
+    zip := read_entire_file("the_mailbag.zip");
+
+    write_string("\n=== Compiling User Application ===\n");
+    {
+        w := compiler_create_workspace("User Application");
+        options := get_build_options(w);
+        options.output_executable_name = "program";
+        options.output_type = .EXECUTABLE;
+        options.entry_point_name = "entry";
+
+        options.stack_trace = false;
+        options.array_bounds_check = .OFF;
+        options.cast\_bounds_check = .OFF;
+        options.math\_bounds_check = .OFF;
+        options.null_pointer_check = .OFF;
+
+        options.additional_linker_arguments = .["-T", "program_link.ld"];
+
+        set_build_options(options, w);
+
+        add_build_file("program.jai", w);
+    }
+
     write_string("\n=== Compiling Kernel ===\n");
     {
         w := compiler_create_workspace("Kernel");
@@ -119,6 +130,7 @@ interrupts: [] struct { message: string; slot: int; } = .[
             add_build_string(builder_to_string(*isr_code), w);
         }
 
+        add_build_string(tprint("MAILBAG_SIZE     :: %;", zip.count), w);
         add_build_string(tprint("COMPILER_VERSION :: \"%\";", compiler_get_version_info(null)), w);
 
         for all_messages {
@@ -157,7 +169,7 @@ interrupts: [] struct { message: string; slot: int; } = .[
             print("Elf header: %\n\n", << elf_header);
 
             PAGE_TABLE_ADDRESS   :: 0x8000;
-            PAGE_TABLE_SIZE      :: 0x5000;
+            PAGE_TABLE_SIZE      :: 0x6000;
             KERNEL_START_ADDRESS :: PAGE_TABLE_ADDRESS + PAGE_TABLE_SIZE;
 
             Patch :: struct {
@@ -268,30 +280,47 @@ interrupts: [] struct { message: string; slot: int; } = .[
             kernel_binary: String_Builder;
 
             kernel_offset := KERNEL_START_ADDRESS;
-            count: int;
+            section_count: int;
             for 0..elf_header.e_phnum - 1 {
                 base := elf.data + elf_header.e_phoff;
                 base += it       * elf_header.e_phentsize;
                 header := cast(*Elf64_Phdr) base;
 
                 if header.p_type != PT_LOAD  continue;
-                count += 1;
+                section_count += 1;
 
-                append(*generated_asm, tprint("  .section_%:\n", count));
+                append(*generated_asm, tprint("  .section_%:\n", section_count));
                 append(*generated_asm, tprint("    dd 0x%\t\t; Target address (VMA)\n", header.p_vaddr));
                 append(*generated_asm, tprint("    dd 0x%\t\t; Source address (LMA)\n", kernel_offset));
-                append(*generated_asm, tprint("    dd 0x%\t\t; Qwords to zero clear\n", header.p_memsz  / 8));
-                append(*generated_asm, tprint("    dd 0x%\t\t; Qwords to copy\n",       header.p_filesz / 8));
+                append(*generated_asm, tprint("    dd 0x%\t\t; Bytes to zero clear\n",  header.p_memsz));
+                append(*generated_asm, tprint("    dd 0x%\t\t; Bytes to copy\n",        header.p_filesz));
 
                 // print("Header:\n%\n", << header);
+                assert(header.p_vaddr + max(header.p_filesz, header.p_memsz) < 0x200_000);
                 append(*kernel_binary, elf.data + header.p_offset, xx header.p_filesz);
                 kernel_offset += xx header.p_filesz;
             }
+
+            append(*kernel_binary, zip);
+
+            section_count += 1;
+            append(*generated_asm, tprint("  .section_%:\t\t ; The mailbag\n", section_count));
+            append(*generated_asm, tprint("    dd 0x%\t\t; Target address (VMA)\n", 0x200_000));
+            append(*generated_asm, tprint("    dd 0x%\t\t; Source address (LMA)\n", kernel_offset));
+            append(*generated_asm, tprint("    dd 0x%\t\t; Bytes to zero clear\n",  0));
+            append(*generated_asm, tprint("    dd 0x%\t\t; Bytes to copy\n",        zip.count));
+
+            print("Mailbag size: %\n", zip.count);
+
             kernel_size := builder_string_length(*kernel_binary);
             write_entire_file(".build/kernel.bin", builder_to_string(*kernel_binary));
 
-            append(*generated_asm, tprint("  .count: dd 0x%\n\n", count));
-            append(*generated_asm, tprint("kernel_sectors equ 0x%\n", kernel_size / 512 + 1));
+            append(*generated_asm, tprint("  .count: dd 0x%\n\n", section_count));
+
+            kernel_sectors := kernel_size / 512 + 1;
+            kernel_sectors += 0x7f - (kernel_sectors % 0x7f);
+
+            append(*generated_asm, tprint("kernel_sectors equ 0x%\n", kernel_sectors));
 
             write_entire_file(".build/generated.asm", builder_to_string(*generated_asm));
         }
@@ -311,6 +340,7 @@ interrupts: [] struct { message: string; slot: int; } = .[
 
         BOCHS_MINIMUM_DISK_SIZE :: 0x200 * 16 * 63;
         padding_size := BOCHS_MINIMUM_DISK_SIZE - theos.count;
+        print("Padding size: %\n", padding_size);
 
         assert(padding_size >= 0, "Kernel too large, pad to the nearest sector");
 
@@ -347,7 +377,7 @@ assemble :: () -> bool {
         write_string("Assembly success!\n");
     }
 
-    od_command := string.["od", "-t", "x1", "-A", "n", ".build/boot_sector.bin"];
+    od_command := string.["od", "-t", "x1z", "-A", "x", "-v", ".build/boot_sector.bin"];
     success, error_code, stdout, stderr = os_run_command(.. od_command, capture_and_return_output = true);
     if !success || error_code != 0 {
         write_string("od failed to run!\n");

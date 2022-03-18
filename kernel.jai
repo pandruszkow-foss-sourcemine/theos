@@ -1,5 +1,6 @@
 
 #import "Machine_X64";
+#load "elf/elf.jai";
 
 cpu: Cpu_X86;
 
@@ -19,17 +20,22 @@ kernel_entry :: () {
     random_seed = rdtsc();
     // enable_ps2_keyboard();
 
-    welcome_screen();
-    // pci_print_device_list();
+    read_zip_files();
+    load_elf(0);
+    print("\n\nFinished running the fun program.");
+    // welcome_screen();
 
-    // for 0..255 {
-    //     if it % 16 == 0 print("\n");
-    //     else print(" ");
-    //     print_hex(buffer[it], false);
+    // for files {
+    //     contents: string;
+    //     contents.data = it.data;
+    //     contents.count = it.size;
+    //     print(contents);
+    //     
+    //     print("\n\n");
     // }
 
-    // wait(50000);
-    // gol();
+    wait(50000);
+    gol();
     while true {};
 }
 
@@ -45,6 +51,15 @@ crt_memcpy :: (dest: *u8, src: *u8, count: u64) -> *void #c_call {
         dest[it] = src[it];
     }
     return dest;
+}
+
+assert :: (condition: bool) {
+    if !condition {
+        print("Assertion failure!\n");
+        while true {
+            // #asm { hlt; }
+        }
+    }
 }
 
 out :: (port: u16, value: $T) {
@@ -254,12 +269,13 @@ welcome_screen :: () {
     print(TITLE);
     print("\n");
 
-
     old_foreground := theme.normal;
     theme.normal = theme.foreground;
     print("      Hello, sailor.\n");
     print("      Boot time is ");
 
+    print(weekdays[cmos_read(.WEEKDAY) - 1]);
+    print(" ");
     print(months[cmos_read(.MONTH) - 1]);
     print(" ");
     print(cmos_read(.DAY_OF_THE_MONTH));
@@ -277,12 +293,16 @@ welcome_screen :: () {
 
     seconds := cmos_read(.SECONDS);
     if seconds < 10 print("0"); print(seconds);
-    print(".\n\n");
+    print(".\n");
 
+    print("      There are ");
+    print(file_count);
+    print(" files in the mailbag.\n");
+
+    print("\n");
     theme.normal = old_foreground;
 
     ti := type_info(x86_Feature_Flag);
-
     print("      Supported CPU features: -------------------------------------------", theme.foreground);
     flags_on_this_line: int;
     for 0..ti.names.count-1 {
@@ -380,6 +400,14 @@ print_hex :: (number: $T, decorate := true) {
         vga_screen[cur + 1] = get_attribute();
     }
     text_cursor += size * 2;
+}
+
+debug :: (message: string, number: int, hex := false) {
+    print(message);
+    print(": ");
+    if hex print_hex(number);
+    else print(number);
+    print("\n");
 }
 
 clear_screen :: () {
@@ -528,6 +556,15 @@ months :: string.[
     "December",
 ];
 
+weekdays :: string.[
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+];
 
 /*
 p :: (value: u64) -> bool {
@@ -590,7 +627,11 @@ gol :: () {
     wait(10000);
 
     read :: (x: int, y: int) -> bool #expand {
-        if y < 0 || y > height-1 || x < 0 || x > width-1 return false;
+        if y < 0        y += height;
+        if y > height-1 y -= height;
+        if x < 0        x += width;
+        if x > width-1  x -= width;
+
         return buffer_a[x + y * width] > 0;
     }
 
@@ -885,4 +926,104 @@ ata_pio_write :: (buffer: *u16, start_sector: u32, sector_count: u8) -> Ata_Erro
         out(xx DATA, buffer[it]);
     }
     return ata_get_error();
+}
+
+
+
+Zip_Entry :: struct {
+    signature:           u32 #align 2;
+    version_made_by:     u16 #align 2;
+    version_needed:      u16 #align 2;
+    bit_flag:            u16 #align 2;
+    compression_type:    u16 #align 2;
+    modification_time:   u16 #align 2;
+    modification_date:   u16 #align 2;
+    crc:                 u32 #align 2;
+    compressed_len:      u32 #align 2;
+    chunk_len:           u32 #align 2;
+    name_len:            u16 #align 2;
+    extra_field_len:     u16 #align 2;
+    file_comment_len:    u16 #align 2;
+    disk_number:         u16 #align 2;
+    internal_attributes: u16 #align 2;
+    external_attributes: u32 #align 2;
+    chunk_offset:        u32 #align 2;
+} #no_padding
+
+File_Desc :: struct {
+    name: string;
+    data: *u8;
+    size: int;
+}
+
+files: [10] File_Desc;
+file_count: int;
+
+ZIP_EOCD_SIGNATURE :: 0x06054b50;
+ZIP_CD\ _SIGNATURE :: 0x02014b50;
+ZIP_LOCAL_HEADER_SIZE :: 0x1e;
+
+read_zip_files :: () {
+    address: int;
+    for 0..MAILBAG_SIZE - 1 {
+        address = MAILBAG_SIZE + 0x200_000 - it;
+        if << cast(*u32) address == ZIP_EOCD_SIGNATURE {
+            break;
+        }
+    }
+
+    address += 10;
+    entry_count := << cast(*u16) address;
+
+    address += 6;
+    directory_location := << cast(*u32) address;
+
+    address = directory_location + 0x200_000;
+    for 0..entry_count - 1 {
+        header := << cast(*Zip_Entry) address;
+        assert(header.signature == ZIP_CD_SIGNATURE);
+
+        file: File_Desc;
+        file.name.data = xx (address + 46);
+        file.name.count = header.name_len;
+
+        file.size = header.compressed_len;
+        file.data = xx (0x200_000 + header.chunk_offset + ZIP_LOCAL_HEADER_SIZE + header.name_len);
+
+        files[file_count] = file;
+        file_count += 1;
+        address += size_of(Zip_Entry) + header.name_len + header.extra_field_len + header.file_comment_len;
+    }
+}
+
+
+
+load_elf :: (file_index: int) {
+    file := files[file_index];
+    elf := cast(*Elf64_Ehdr) file.data;
+
+    for 0..elf.e_phnum - 1 {
+        base := file.data + elf.e_phoff;
+        base += it        * elf.e_phentsize;
+        header := cast(*Elf64_Phdr) base;
+
+        if header.p_type != PT_LOAD  continue;
+        assert(header.p_vaddr >= 0x300_000 && header.p_vaddr < 0x400_000);
+
+        target := cast(*u8) header.p_vaddr;
+
+        for 0..header.p_filesz-1 {
+            target[it] = file.data[header.p_offset + it];
+        }
+
+        zero := cast(int) (header.p_memsz - header.p_filesz);
+
+        // for cast(int) header.p_filesz..zero-1 {
+        //     target[it] = 0;
+        // }
+    }
+
+    entry_point: ();
+    crt_memcpy(xx *entry_point, xx *elf.e_entry, 8);
+    entry_point();
 }

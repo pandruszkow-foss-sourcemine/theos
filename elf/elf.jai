@@ -573,7 +573,3 @@ Elf64_Cap :: struct {
         c_ptr: Elf64_Addr;
     };
 }
-
-#scope_file
-
-#import "Basic"; // For assert

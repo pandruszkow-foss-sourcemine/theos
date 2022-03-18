@@ -4,7 +4,6 @@
 
 %define dbs 0x13
 %define dbs_read 0x02
-%define dbs_ext_read 0x42
 
 [org 0x7c00]
 [bits 16]
@@ -27,25 +26,29 @@ start:
     mov al, 0x3
     int vbs
 
+    ; === Load the rest of the bootloader ===
+    mov ah, dbs_read
+    mov al, 1
+    mov cl, 2
+    mov ch, 0
+    mov dh, 0
+    mov dl, [.boot_drive]
+    mov bx, second_sector
+    int dbs
+
     ; === Write string ===
     mov ax, .greeting
     call write_string
 
-    ; === Load sectors ===
-    call load_kernel
-
     ; === Switch to Long Mode ===
     mov edi, page_table_address
     jmp SwitchToLongMode
-
-    ; === Wait ===
     jmp $
 
-.greeting: db 12, 'Hello sailor'
+.greeting: db 12, 'Loaded stuff'
 .boot_drive: db 0
 
 %include "generated.asm"
-%include "long.asm"
 
 [bits 16]
 write_string:
@@ -75,39 +78,12 @@ write_string:
     popa
     ret
 
-.line: db 0
-
-disk_address_packet:
-  .size:        db 10h
-  .reserved:    db 0
-  .num_sectors: dw 0
-  .buffer:      dw 0
-  .segment:     dw 0
-  .source_lba:  dq 1
-
-load_kernel:
-    pusha
-
-    mov word [disk_address_packet.num_sectors], kernel_sectors
-    mov word [disk_address_packet.buffer],      kernel_start_address
-
-    ; === Point DS:SI at address packet ===
-    xor ax, ax
-    mov ds, ax
-    mov si, disk_address_packet
-
-    ; === Call BIOS extended read ===
-    mov dl, [start.boot_drive]
-    mov ah, dbs_ext_read
-    mov al, 0
-
-    cld
-    int dbs
-    popa
-    ret
+  .line: db 0
 
 [bits 64]
 long_mode_start:
+    call load_kernel
+
     xor ebx, ebx
 
   .loop:
@@ -137,14 +113,72 @@ long_mode_start:
 
     ; === Copy ===
     mov ecx, [eax + 12]
-    rep movsq
+    rep movsb
 
     inc ebx
     jmp .loop
 
   .end:
     jmp kernel_entry_point
-    jmp $
+
+load_kernel:
+    mov r8, kernel_sectors
+    mov r9, 2
+    mov edi, kernel_start_address
+
+  .loop:
+    mov rax, r9
+    shr eax, 24
+    or al, 0b11100000
+    mov dx, 0x1f6
+    out dx, al
+
+    mov dx, 0x1f2
+    mov al, 0x7f
+    out dx, al
+
+    mov rax, r9
+    mov dx, 0x1f3
+    out dx, al
+
+    shr rax, 8
+    mov dx, 0x1f4
+    out dx, al
+
+    shr rax, 8
+    mov dx, 0x1f5
+    out dx, al
+
+    mov al, 0x20
+    mov dx, 0x1f7
+    out dx, al
+
+  .wait_for_trq:
+    in al, dx
+    test al, 8
+    jz .wait_for_trq
+
+    mov rax, 256
+    mov r10, 0x7f
+    mul r10
+    mov rcx, rax
+    mov rdx, 0x1f0
+    rep insw
+
+    add r9, 0x7f
+    sub r8, 0x7f
+    cmp r8, 0
+    jnz .loop
+
+    ret
 
 times 0x1fe-($-$$) db 0
 dw 0xaa55
+
+
+[bits 16]
+second_sector:
+  %include "long.asm"
+
+times 0x400-($-$$) db 0
+
