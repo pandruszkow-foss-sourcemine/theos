@@ -67,30 +67,13 @@ interrupts: [] struct { message: string; slot: int; } = .[
             generate_elf_bindings();
         }
     }
-    #if OS != .LINUX return;
+
+    #if OS != .LINUX {
+        write_string("This build program must be executed on linux, or within WSL.\n");
+        return;
+    }
 
     zip := read_entire_file("the_mailbag.zip");
-
-    write_string("\n=== Compiling User Application ===\n");
-    {
-        w := compiler_create_workspace("User Application");
-        options := get_build_options(w);
-        options.output_executable_name = "program";
-        options.output_type = .EXECUTABLE;
-        options.entry_point_name = "entry";
-
-        options.stack_trace = false;
-        options.array_bounds_check = .OFF;
-        options.cast\_bounds_check = .OFF;
-        options.math\_bounds_check = .OFF;
-        options.null_pointer_check = .OFF;
-
-        options.additional_linker_arguments = .["-T", "program_link.ld"];
-
-        set_build_options(options, w);
-
-        add_build_file("program.jai", w);
-    }
 
     write_string("\n=== Compiling Kernel ===\n");
     {

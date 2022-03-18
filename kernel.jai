@@ -7,6 +7,10 @@ cpu: Cpu_X86;
 #program_export
 kernel_entry :: () {
 
+    //     << cast(*u64) 0xb8000 = 85204958398235235;
+    // print("Testing.");
+    // while true {}
+
     idt_init();
     pic_init();
     cmos_init();
@@ -18,12 +22,13 @@ kernel_entry :: () {
     vga_hide_cursor();
     vga_attribute(0x10, 3, set = false);
     random_seed = rdtsc();
-    // enable_ps2_keyboard();
+    enable_ps2_keyboard();
 
     read_zip_files();
-    load_elf(0);
-    print("\n\nFinished running the fun program.");
-    // welcome_screen();
+    // load_elf(0);
+
+    clear_screen();
+    welcome_screen();
 
     // for files {
     //     contents: string;
@@ -34,7 +39,7 @@ kernel_entry :: () {
     //     print("\n\n");
     // }
 
-    wait(50000);
+    wait(50);
     gol();
     while true {};
 }
@@ -183,8 +188,6 @@ idt_init :: () {
     }
 }
 
-
-
 Pic_Port :: enum u16 {
     MASTER_CMD  :: 0x20;
     MASTER_DATA :: 0x21;
@@ -236,10 +239,18 @@ pic_enable_irq :: (irq: u8) {
     port_write(port, value);
 }
 
-
+scan_table         :: "\0#1234567890-=\0\tqwertyuiop[]\0\0asdfghjkl;'`\0\\zxcvbnm,./\0*\0 ";
+scan_table_shifted :: "\0#!@#$%^&*()_+\0\0QWERTYUIOP{}\0\0ASDFGHJKL:\"~\0|ZXCVBNM<>?\0*\0 ";
 
 keyboard_isr :: () {
-    print("A key has been pressed.");
+    print("A key has been pressed: '");
+    key := port_read(0x60);
+
+    char: string;
+    char.data = *scan_table[key];
+    char.count = 1;
+    print(char);
+    print("'\n");
     while true {}
 }
 
@@ -1016,14 +1027,13 @@ load_elf :: (file_index: int) {
             target[it] = file.data[header.p_offset + it];
         }
 
-        zero := cast(int) (header.p_memsz - header.p_filesz);
-
-        // for cast(int) header.p_filesz..zero-1 {
-        //     target[it] = 0;
-        // }
+        for header.p_filesz..header.p_memsz-1 {
+            target[it] = 0;
+        }
     }
 
     entry_point: ();
     crt_memcpy(xx *entry_point, xx *elf.e_entry, 8);
+
     entry_point();
 }

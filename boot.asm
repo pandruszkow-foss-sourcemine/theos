@@ -26,6 +26,10 @@ start:
     mov al, 0x3
     int vbs
 
+    ; === Write string ===
+    mov ax, .greeting
+    call write_string
+
     ; === Load the rest of the bootloader ===
     mov ah, dbs_read
     mov al, 1
@@ -50,7 +54,6 @@ start:
 
 %include "generated.asm"
 
-[bits 16]
 write_string:
     pusha
 
@@ -159,14 +162,12 @@ load_kernel:
     jz .wait_for_trq
 
     mov rax, 256
-    mov r10, 0x7f
-    mul r10
     mov rcx, rax
     mov rdx, 0x1f0
     rep insw
 
-    add r9, 0x7f
-    sub r8, 0x7f
+    add r9, 1
+    sub r8, 1
     cmp r8, 0
     jnz .loop
 
@@ -181,4 +182,3 @@ second_sector:
   %include "long.asm"
 
 times 0x400-($-$$) db 0
-
