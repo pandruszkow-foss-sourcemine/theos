@@ -1,6 +1,7 @@
 
 #import "Machine_X64";
 #load "elf/elf.jai";
+#load "pci.jai";
 
 cpu: Cpu_X86;
 
@@ -24,24 +25,30 @@ kernel_entry :: () {
     random_seed = rdtsc();
     enable_ps2_keyboard();
 
+    clear_screen();
     read_zip_files();
     // load_elf(0);
+    // print("\nExecuted the program.\n");
 
-    clear_screen();
-    welcome_screen();
+    pci_scan_all_devices();
+    // pci_print_device_list();
+    // welcome_screen();
 
-    // for files {
-    //     contents: string;
-    //     contents.data = it.data;
-    //     contents.count = it.size;
-    //     print(contents);
-    //     
-    //     print("\n\n");
-    // }
+    print("\n");
+    for files {
+        contents: string;
+        contents.data = it.data;
+        contents.count = it.size;
+        print(contents);
+        
+        print("\n\n");
+    }
+    new_page();
+    hda_detect();
 
+    while true {};
     wait(50);
     gol();
-    while true {};
 }
 
 crt_memset :: (target: *u8, value: s32, count: u64) -> *void #c_call {
@@ -342,11 +349,34 @@ welcome_screen :: () {
 vga_columns :: 80;
 vga_rows    :: 25;
 
+indent: int;
+margin: int = 2;
 text_cursor: int;
 vga_screen :: cast(*u8) 0xb8000;
 
 get_attribute :: () -> u8 {
     return cast(u8) theme.normal | (theme.background << 4);
+}
+
+new_page :: () {
+    furthest: int;
+
+    for y: 0..vga_rows - 1 {
+        for x: 0..vga_columns - 1 {
+            cell := y * vga_columns + x;
+            if vga_screen[cell * 2] != 0 && vga_screen[cell * 2] != #char " " {
+                if x > furthest furthest = x;
+            }
+        }
+    }
+
+    for 0..vga_rows-1 {
+        cell := it * vga_columns + furthest + 3;
+        vga_screen[cell * 2] = 0xba;
+    }
+
+    indent = furthest + 4;
+    text_cursor = margin;
 }
 
 print :: (text: string, foreground: Vga_Color = 255, background: Vga_Color = 255) {
@@ -357,12 +387,17 @@ print :: (text: string, foreground: Vga_Color = 255, background: Vga_Color = 255
         if it == 10 {
             distance := text_cursor % vga_columns;
             text_cursor += vga_columns - distance;
+            text_cursor += margin;
             continue;
         }
 
         if it == 13 continue;
 
-        i := text_cursor;
+        i := text_cursor + indent;
+        if (i+1) % vga_columns == 0 {
+            text_cursor += indent + margin + margin;
+        }
+
         vga_screen[i * 2]     = it;
         vga_screen[i * 2 + 1] = cast(u8) fg | (bg << 4);
 
@@ -406,7 +441,7 @@ print_hex :: (number: $T, decorate := true) {
         index := number >> (it * 4);
         index &= 0xf;
 
-        cur := (text_cursor + size * 2 - it - 1) * 2;
+        cur := (text_cursor + indent + size * 2 - it - 1) * 2;
         vga_screen[cur] = table[index];
         vga_screen[cur + 1] = get_attribute();
     }
@@ -684,141 +719,6 @@ gol :: () {
 
 
 
-PCI_MAX_BUSES        :: 256;
-PCI_MAX_DEVICES      :: 32;
-PCI_NUM_FUNCTIONS    :: 8;
-PCI_VENDOR_NO_DEVICE :: 0xffff;
-PCI_HEADER_TYPE_MULTIFUNCTION_BIT :: 0x80;
-
-Pci_Device_Info :: struct {
-    bus: u32;
-    index: u32;
-    function: u32;
-    header: Pci_Header;
-}
-
-Pci_Class_Code :: enum {
-    MASS_STORAGE             :: 0x1;
-    NETWORK                  :: 0x2;
-    DISPLAY_DEVICE           :: 0x3;
-    MULTIMEDIA               :: 0x4;
-    MEMORY_CONTROLLER        :: 0x5;
-    BRIDGE                   :: 0x6;
-    COMMUNICATION            :: 0x7;
-    SYSTEM_PERIPHERAL        :: 0x8;
-    INPUT_DEVICE             :: 0x9;
-    DOCKING_STATION          :: 0xa;
-    PROCESSOR                :: 0xb;
-    SERIAL_BUS               :: 0xc;
-    WIRELESS_CONTROLLER      :: 0xd;
-}
-
-Pci_Port :: enum {
-    CONFIG_ADDRESS :: 0xcf8;
-    CONFIG_DATA    :: 0xcfc;
-}
-
-Pci_Header :: struct {
-    vendor_id:       u16;
-    device_id:       u16;
-    status:          u16;
-    command:         u16;
-    revision_id:     u8;
-    prog_if:         u8;
-    subclass:        u8;
-    class_code:      u8;
-    cache_line_size: u8;
-    latency_timer:   u8;
-    header_type:     u8;
-    bist:            u8;
-}
-
-pci_devices: [PCI_MAX_BUSES * PCI_MAX_DEVICES] Pci_Device_Info;
-pci_device_count: int;
-pci_devices_scanned: bool;
-
-pci_scan_all_devices :: () {
-    if pci_devices_scanned return;
-
-    AddDevice :: (function: int) #expand {
-        device: Pci_Device_Info = ---;
-        device.bus       = xx `bus;
-        device.index     = xx `index;
-        device.function  = xx function;
-        device.header    = `header; // `
-
-        pci_devices[pci_device_count] = device;
-        pci_device_count += 1;
-    }
-
-    for bus: 0..PCI_MAX_BUSES-1 {
-        for index: 0..PCI_MAX_DEVICES-1 {
-            header := pci_read_header(xx bus, xx index, 0);
-            if header.vendor_id == PCI_VENDOR_NO_DEVICE continue;
-
-            AddDevice(0);
-
-            if (header.header_type & PCI_HEADER_TYPE_MULTIFUNCTION_BIT) {
-                for function: 1..PCI_NUM_FUNCTIONS - 1 {
-                    header := pci_read_header(xx bus, xx index, xx function);
-                    if header.vendor_id == PCI_VENDOR_NO_DEVICE continue;
-
-                    AddDevice(function);
-                }
-            }
-        }
-    }
-
-    pci_devices_scanned = true;
-}
-
-pci_read_header :: (bus: u32, device: u32, function: u32) -> Pci_Header {
-    address: u32;
-    address |= function << 8;
-    address |= device   << 11;
-    address |= bus      << 16;
-    address |= 1        << 31;
-
-    using Pci_Port;
-    header: Pci_Header = ---;
-
-    for 0..size_of(Pci_Header) / 4 - 1 {
-        offset := cast(u32) it * 4;
-
-        out(xx CONFIG_ADDRESS, address | offset);
-        register_value := in(xx CONFIG_DATA);
-
-        << (cast(*u32) *header + it) = register_value;
-    }
-    return header;
-}
-
-pci_print_device_list :: () {
-    if !pci_devices_scanned pci_scan_all_devices();
-
-    ti := type_info(Pci_Class_Code);
-    for 0..pci_device_count - 1 {
-        device_info := pci_devices[it];
-
-        print("    PCI device, class ");
-        name := ti.names[device_info.header.class_code - 1];
-        print(name);
-        for 0..15 - name.count print(" ");
-        print("subclass ");
-        print_hex(device_info.header.subclass);
-
-        print(" | Address ");
-        print(device_info.bus);
-        print(":");
-        print(device_info.index);
-        print(":");
-        print(device_info.function);
-        print("\n");
-    }
-}
-
-
-
 page_table: [0x200] u64 #align 0x1000;
 page_dir:   [0x200] u64 #align 0x1000;
 pdpt:       [0x200] u64 #align 0x1000;
@@ -975,27 +875,27 @@ ZIP_CD\ _SIGNATURE :: 0x02014b50;
 ZIP_LOCAL_HEADER_SIZE :: 0x1e;
 
 read_zip_files :: () {
-    address: int;
+    cursor: int;
     for 0..MAILBAG_SIZE - 1 {
-        address = MAILBAG_SIZE + 0x200_000 - it;
-        if << cast(*u32) address == ZIP_EOCD_SIGNATURE {
+        cursor = MAILBAG_SIZE + 0x200_000 - it;
+        if << cast(*u32) cursor == ZIP_EOCD_SIGNATURE {
             break;
         }
     }
 
-    address += 10;
-    entry_count := << cast(*u16) address;
+    cursor += 10;
+    entry_count := << cast(*u16) cursor;
 
-    address += 6;
-    directory_location := << cast(*u32) address;
+    cursor += 6;
+    directory_location := << cast(*u32) cursor;
 
-    address = directory_location + 0x200_000;
+    cursor = directory_location + 0x200_000;
     for 0..entry_count - 1 {
-        header := << cast(*Zip_Entry) address;
+        header := << cast(*Zip_Entry) cursor;
         assert(header.signature == ZIP_CD_SIGNATURE);
 
         file: File_Desc;
-        file.name.data = xx (address + 46);
+        file.name.data = xx (cursor + 46);
         file.name.count = header.name_len;
 
         file.size = header.compressed_len;
@@ -1003,7 +903,7 @@ read_zip_files :: () {
 
         files[file_count] = file;
         file_count += 1;
-        address += size_of(Zip_Entry) + header.name_len + header.extra_field_len + header.file_comment_len;
+        cursor += size_of(Zip_Entry) + header.name_len + header.extra_field_len + header.file_comment_len;
     }
 }
 
@@ -1032,8 +932,6 @@ load_elf :: (file_index: int) {
         }
     }
 
-    entry_point: ();
-    crt_memcpy(xx *entry_point, xx *elf.e_entry, 8);
-
+    entry_point := << cast(*()) *elf.e_entry;
     entry_point();
 }

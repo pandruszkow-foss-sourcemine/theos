@@ -1,8 +1,10 @@
 
 #run {
+    set_build_options_dc(.{do_output = false});
+
     user_args, compiler_args := compiler_get_command_line_arguments();
-    name: string = "app";
-    if user_args.count name = user_args[0];
+    if !user_args.count assert(false);
+    name := user_args[0];
 
     print("\n=== Compiling User Application \"%\" ===\n", name);
     {
@@ -41,3 +43,4 @@ END;
 
 #import "Compiler";
 #import "File";
+#import "Basic";

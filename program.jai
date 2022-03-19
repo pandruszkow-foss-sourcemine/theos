@@ -1,6 +1,6 @@
 
 #program_export
-entry :: () {
+start :: () {
     screen := cast(*u8) 0xb8000;
 
     for cast([] u8) "This is a fun test, again" {
