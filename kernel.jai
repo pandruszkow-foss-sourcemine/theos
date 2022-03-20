@@ -26,25 +26,18 @@ kernel_entry :: () {
     enable_ps2_keyboard();
 
     clear_screen();
-    read_zip_files();
+    // read_zip_files();
     // load_elf(0);
     // print("\nExecuted the program.\n");
 
-    pci_scan_all_devices();
+    // pci_scan_all_devices();
     // pci_print_device_list();
     // welcome_screen();
 
-    print("\n");
-    for files {
-        contents: string;
-        contents.data = it.data;
-        contents.count = it.size;
-        print(contents);
-        
-        print("\n\n");
-    }
-    new_page();
-    hda_detect();
+    // hda_detect();
+    // vertical_divide();
+
+    page_table_init();
 
     while true {};
     wait(50);
@@ -65,9 +58,14 @@ crt_memcpy :: (dest: *u8, src: *u8, count: u64) -> *void #c_call {
     return dest;
 }
 
-assert :: (condition: bool) {
+assert :: (condition: bool, call_site := #caller_location) {
     if !condition {
         print("Assertion failure!\n");
+        print(call_site.fully_pathed_filename);
+        print(":");
+        print(call_site.line_number);
+        print("\n");
+
         while true {
             // #asm { hlt; }
         }
@@ -79,9 +77,11 @@ out :: (port: u16, value: $T) {
         port  === d;
         value === a;
     }
-    #if T == u8  #asm { out.b port, value; }
-    #if T == u16 #asm { out.w port, value; }
-    #if T == u32 #asm { out.d port, value; }
+
+    #if      T == u8  #asm { out.b port, value; }
+    else #if T == u16 #asm { out.w port, value; }
+    else #if T == u32 #asm { out.d port, value; }
+    else #assert(false);
 }
 
 in :: (port: u16, $T: Type = u32) -> T {
@@ -90,9 +90,12 @@ in :: (port: u16, $T: Type = u32) -> T {
         port  === d;
         value === a;
     }
-    #if T == u8  #asm { in.b value, port; }
-    #if T == u16 #asm { in.w value, port; }
-    #if T == u32 #asm { in.d value, port; }
+
+    #if      T == u8  #asm { in.b value, port; }
+    else #if T == u16 #asm { in.w value, port; }
+    else #if T == u32 #asm { in.d value, port; }
+    else #assert(false);
+
     return value;
 }
 
@@ -351,6 +354,8 @@ vga_rows    :: 25;
 
 indent: int;
 margin: int = 2;
+ceiling: int = 5;
+
 text_cursor: int;
 vga_screen :: cast(*u8) 0xb8000;
 
@@ -358,7 +363,7 @@ get_attribute :: () -> u8 {
     return cast(u8) theme.normal | (theme.background << 4);
 }
 
-new_page :: () {
+vertical_divide :: () {
     furthest: int;
 
     for y: 0..vga_rows - 1 {
@@ -719,10 +724,13 @@ gol :: () {
 
 
 
-page_table: [0x200] u64 #align 0x1000;
-page_dir:   [0x200] u64 #align 0x1000;
-pdpt:       [0x200] u64 #align 0x1000;
-pml4:       [0x200] u64 #align 0x1000;
+IDENTITY_MAP_SIZE :: 8;
+PAGE_TABLE_RANGE :: 0x200_000;
+
+page_tables: [IDENTITY_MAP_SIZE][0x200] u64 #align 0x1000;
+page_dir: [0x200] u64 #align 0x1000;
+pdpt:     [0x200] u64 #align 0x1000;
+pml4:     [0x200] u64 #align 0x1000;
 
 Page_Table_Flags :: enum_flags u64 {
     PRESENT         :: 1 << 0;
@@ -738,13 +746,52 @@ Page_Table_Flags :: enum_flags u64 {
 
 page_table_init :: () {
     using Page_Table_Flags;
-    pml4    [0] = cast(u64) (xx pdpt.data)       | PRESENT | READ_WRITE;
-    pdpt    [0] = cast(u64) (xx page_dir.data)   | PRESENT | READ_WRITE;
-    page_dir[0] = cast(u64) (xx page_table.data) | PRESENT | READ_WRITE;
 
-    for 0..page_table.count - 1 {
-        page_table[it] = xx (it * 0x1000);
+    pml4    [0] = cast(u64) (xx pdpt.data)     | PRESENT | READ_WRITE;
+    pdpt    [0] = cast(u64) (xx page_dir.data) | PRESENT | READ_WRITE;
+
+    for t: 0..IDENTITY_MAP_SIZE - 1 {
+        table: [] u64;
+        table.data = page_tables[t].data;
+        table.count = 0x200;
+
+        page_dir[t] = cast(u64) (xx table.data) | PRESENT | READ_WRITE;
+
+        for 0..0x200 - 1 {
+            address := (it * 0x1000 + t * PAGE_TABLE_RANGE);
+            table[it] = cast(u64) (xx address) | PRESENT | READ_WRITE;
+        }
     }
+
+    address := random() % (PAGE_TABLE_RANGE * IDENTITY_MAP_SIZE);
+    assert(get_physical_address(xx address) == address);
+}
+
+get_physical_address :: (virtual_address: *void) -> u64 {
+    using Page_Table_Flags;
+    x := cast(u64) virtual_address;
+
+    mask: u64 = 0b111111111;
+
+    pml4_offset := (x >> 39) & mask;
+    pdpt_offset := (x >> 30) & mask;
+    pd\ _offset := (x >> 21) & mask;
+    pt\ _offset := (x >> 12) & mask;
+    page_offset := x & 0xfff;
+
+    ReadTableEntry :: (index: u64, table_address: u64) -> entry: u64 #expand {
+        assert((xx table_address) & PRESENT > 0);
+
+        table := cast(*u64) (table_address & (~0xfff));
+        return table[index];
+    }
+
+    pml4e := pml4[pml4_offset];
+    pdpte := ReadTableEntry(pdpt_offset, pml4e);
+    pde   := ReadTableEntry(pd\ _offset, pdpte);
+    pte   := ReadTableEntry(pt\ _offset, pde);
+
+    return (pte & ~0xfff) + page_offset;
 }
 
 
@@ -818,10 +865,13 @@ ata_pio_read :: (buffer: *u16, start_sector: u32, sector_count: u8) -> Ata_Error
 
     ata_pio_start(start_sector, sector_count);
     port_write(xx COMMAND, xx Ata_Command.READ);
-    ata_await_transfer_request();
 
-    for 0..sector_count * 0x100-1 {
-        buffer[it] = in(xx DATA, u16);
+    for 0..sector_count - 1 {
+        ata_await_transfer_request();
+
+        for 0..0x100 - 1 {
+            buffer[it] = in(xx DATA, u16);
+        }
     }
     return ata_get_error();
 }
@@ -831,10 +881,13 @@ ata_pio_write :: (buffer: *u16, start_sector: u32, sector_count: u8) -> Ata_Erro
 
     ata_pio_start(start_sector, sector_count);
     port_write(xx COMMAND, xx Ata_Command.WRITE);
-    ata_await_transfer_request();
 
-    for 0..sector_count * 0x100-1 {
-        out(xx DATA, buffer[it]);
+    for 0..sector_count - 1 {
+        ata_await_transfer_request();
+
+        for 0..0x100 - 1 {
+            out(xx DATA, buffer[it]);
+        }
     }
     return ata_get_error();
 }

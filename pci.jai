@@ -67,57 +67,6 @@ Pci_Header :: struct {
     latency_timer:   u8;
     header_type:     u8;
     bist:            u8;
-
-    // union {
-    //     type_0: Pci_Header_Type_0x0;
-    //     type_1: Pci_Header_Type_0x1;
-    // };
-}
-
-Pci_Header_Type_0x0 :: struct {
-    base_address_0:   u32;
-    base_address_1:   u32;
-    base_address_2:   u32;
-    base_address_3:   u32;
-    base_address_4:   u32;
-    base_address_5:   u32;
-    cardbus_cis:      u32;
-    subsystem_vendor: u16;
-    subsystem_id:     u16;
-    expansion_rom:    u32;
-    capabilities:     u8;
-    reserved:         [7] u8;
-    interrupt_line:   u8;
-    interrupt_pin:    u8;
-    min_grant:        u8;
-    max_latency:      u8;
-}
-
-Pci_Header_Type_0x1 :: struct {
-    base_address_0:             u32;
-    base_address_1:             u32;
-    primary_bus_number:         u8;
-    secondary_bus_number:       u8;
-    subordinate_bus_number:     u8;
-    secondary_latency_timer:    u8;
-    io_base:                    u8;
-    io_limit:                   u8;
-    secondary_status:           u16;
-    memory_base:                u16;
-    memory_limit:               u16;
-    prefetchable_memory_base:   u16;
-    prefetchable_memory_limit:  u16;
-    prefetchable_base_upper:    u32;
-    prefetchable_limit_upper:   u32;
-
-    io_base_upper:              u16;
-    io_limit_upper:             u16;
-    capability_pointer:         u8;
-    reserved:                   [3] u8;
-    expansion_rom_base_address: u32;
-    interrupt_line:             u8;
-    interrupt_pin:              u8;
-    bridge_control:             u16;
 }
 
 pci_device_info: [PCI_MAX_BUSES * PCI_MAX_DEVICES] Pci_Device_Info;
@@ -167,11 +116,11 @@ pci_scan_all_devices :: () {
 }
 
 pci_read_header :: (bus: u32, device: u32, function: u32) -> Pci_Header {
-    address: u32;
-    address |= function << 8;
-    address |= device   << 11;
-    address |= bus      << 16;
-    address |= 1        << 31;
+    pci_address: u32;
+    pci_address |= function << 8;
+    pci_address |= device   << 11;
+    pci_address |= bus      << 16;
+    pci_address |= 1        << 31;
 
     using Pci_Port;
     header: Pci_Header = ---;
@@ -179,7 +128,7 @@ pci_read_header :: (bus: u32, device: u32, function: u32) -> Pci_Header {
     for 0..size_of(Pci_Header) / 4 - 1 {
         offset := cast(u32) it * 4;
 
-        out(xx CONFIG_ADDRESS, address | offset);
+        out(xx CONFIG_ADDRESS, pci_address | offset);
         register_value := in(xx CONFIG_DATA);
 
         << (cast(*u32) *header + it) = register_value;
@@ -187,18 +136,65 @@ pci_read_header :: (bus: u32, device: u32, function: u32) -> Pci_Header {
     return header;
 }
 
-pci_read_configuration_register :: (info: Pci_Device_Info, reg_index: u32) -> u32 {
-    address: u32;
-    address |= info.function << 8;
-    address |= info.index    << 11;
-    address |= info.bus      << 16;
-    address |= 1             << 31;
+pci_read_config_register :: (info: Pci_Device_Info, reg_index: u32) -> u32 {
+    pci_address: u32;
+    pci_address |= info.function << 8;
+    pci_address |= info.index    << 11;
+    pci_address |= info.bus      << 16;
+    pci_address |= 1             << 31;
 
     using Pci_Port;
     offset := reg_index * 4;
 
-    out(xx CONFIG_ADDRESS, address | offset);
+    out(xx CONFIG_ADDRESS, pci_address | offset);
     return in(xx CONFIG_DATA);
+}
+
+pci_write_config_register :: (info: Pci_Device_Info, reg_index: u32, value: u32) {
+    pci_address: u32;
+    pci_address |= info.function << 8;
+    pci_address |= info.index    << 11;
+    pci_address |= info.bus      << 16;
+    pci_address |= 1             << 31;
+
+    using Pci_Port;
+    offset := reg_index * 4;
+
+    out(xx CONFIG_ADDRESS, pci_address | offset);
+    out(xx CONFIG_DATA, value);
+}
+
+Pci_Base_Address_Type :: enum {
+    MEMORY_32;
+    MEMORY_64;
+    IO;
+}
+
+pci_get_base_address :: (info: Pci_Device_Info, bar: u32) -> base: u64, limit: u32, io_space: bool {
+    assert(info.header.header_type != 0x2);
+
+    bar0 := pci_read_config_register(info, bar + 0x4);
+
+    io_space := cast(bool) (bar0 & 0b001);
+    _64bit := !io_space && (bar0 & 0b100);
+
+    mask: u64;
+    if io_space mask = 0xfffffffc;
+    else        mask = 0xfffffff0;
+
+    base: u64 = bar0 & mask;
+    if _64bit {
+        bar1 := pci_read_config_register(info, bar + 0x5);
+        base |= bar1 << 32;
+    }
+
+    pci_write_config_register(info, bar + 0x4, 0xffffffff);
+    limit := pci_read_config_register(info, bar + 0x4);
+
+    pci_write_config_register(info, bar + 0x4, bar0);
+
+    limit = cast(u32) ~(limit & mask) + 1;
+    return base, limit, io_space;
 }
 
 pci_print_device_list :: () {
@@ -239,17 +235,32 @@ hda_detect :: () {
             print(":");
             print(info.function);
 
-            print("\nHeader type: "); print(info.header.header_type);
+            print("\nHeader type: "); print_hex(info.header.header_type);
             print("\n\nConfig registers:\n");
 
             margin += 2; text_cursor += 2;
             for 0..0xf {
                 print_hex(cast(u8) it); print(": ");
-                bar := pci_read_configuration_register(info, cast(u32) it);
+                bar := pci_read_config_register(info, cast(u32) it);
                 print_hex(bar);
                 print("\n");
             }
             margin -= 2;
+
+            vertical_divide();
+
+            base, limit, io_space := pci_get_base_address(info, 0);
+            print("\nBase:\n  ");
+            print_hex(base);
+            print("\n\nLimit:\n  ");
+            print_hex(limit);
+            print("\n\nIO Space:\n  ");
+            if io_space print("true");
+            else print("false");
+
+            print("\n");
+
+            vertical_divide();
         }
     }
 }

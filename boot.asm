@@ -40,16 +40,12 @@ start:
     mov bx, second_sector
     int dbs
 
-    ; === Write string ===
-    mov ax, .greeting
-    call write_string
-
     ; === Switch to Long Mode ===
     mov edi, page_table_address
     jmp SwitchToLongMode
     jmp $
 
-.greeting: db 12, 'Loaded stuff'
+.greeting: db 13, 'Hello, sailor'
 .boot_drive: db 0
 
 %include "generated.asm"
