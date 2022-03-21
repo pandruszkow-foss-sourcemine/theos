@@ -6,3 +6,6 @@ theos
 
 *.txt
 program
+*.vdi
+*.img
+*.iso

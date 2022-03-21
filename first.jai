@@ -75,6 +75,15 @@ interrupts: [] struct { message: string; slot: int; } = .[
 
     zip := read_entire_file("the_mailbag.zip");
 
+    BOOTLOADER_SECTOR_COUNT :: 5;
+    BOOT_DATA_AREA       :: 0x8000;
+    BOOT_DATA_SIZE       :: 0x1000;
+
+    PAGE_TABLE_ADDRESS   :: BOOT_DATA_AREA + BOOT_DATA_SIZE;
+    PAGE_TABLE_SIZE      :: 0x6000;
+
+    KERNEL_START_ADDRESS :: PAGE_TABLE_ADDRESS + PAGE_TABLE_SIZE;
+
     write_string("\n=== Compiling Kernel ===\n");
     {
         w := compiler_create_workspace("Kernel");
@@ -114,6 +123,7 @@ interrupts: [] struct { message: string; slot: int; } = .[
         }
 
         add_build_string(tprint("MAILBAG_SIZE     :: %;", zip.count), w);
+        add_build_string(tprint("BOOT_DATA_AREA   :: %;", BOOT_DATA_AREA), w);
         add_build_string(tprint("COMPILER_VERSION :: \"%\";", compiler_get_version_info(null)), w);
 
         for all_messages {
@@ -150,10 +160,6 @@ interrupts: [] struct { message: string; slot: int; } = .[
             }
 
             print("Elf header: %\n\n", << elf_header);
-
-            PAGE_TABLE_ADDRESS   :: 0x8000;
-            PAGE_TABLE_SIZE      :: 0x6000;
-            KERNEL_START_ADDRESS :: PAGE_TABLE_ADDRESS + PAGE_TABLE_SIZE;
 
             Patch :: struct {
                 source: string;
@@ -258,6 +264,8 @@ interrupts: [] struct { message: string; slot: int; } = .[
             append(*generated_asm, tprint("kernel_entry_point    equ 0x%\n", elf_header.e_entry));
             append(*generated_asm, tprint("kernel_start_address  equ 0x%\n", KERNEL_START_ADDRESS));
             append(*generated_asm, tprint("page_table_address    equ 0x%\n", PAGE_TABLE_ADDRESS));
+            append(*generated_asm, tprint("bootloader_sectors    equ 0x%\n", BOOTLOADER_SECTOR_COUNT));
+            append(*generated_asm, tprint("boot_data_area        equ 0x%\n", BOOT_DATA_AREA));
 
             append(*generated_asm, "\nkernel_section_table:\n");
             kernel_binary: String_Builder;
@@ -321,7 +329,7 @@ interrupts: [] struct { message: string; slot: int; } = .[
 
         theos       := join(boot_sector, kernel);
 
-        BOCHS_MINIMUM_DISK_SIZE :: 0x200 * 16 * 63;
+        BOCHS_MINIMUM_DISK_SIZE :: 0x100_000;
         padding_size := BOCHS_MINIMUM_DISK_SIZE - theos.count;
         print("Padding size: %\n", padding_size);
 
@@ -332,6 +340,9 @@ interrupts: [] struct { message: string; slot: int; } = .[
 
         theos = join(theos, to_string(padding, padding_size));
         write_entire_file("theos", theos);
+
+        cp_command := string.["cp", "theos", "theos.img"];
+        os_run_command(.. cp_command, capture_and_return_output = true);
     }
 }
 

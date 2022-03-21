@@ -80,14 +80,14 @@ SwitchToLongMode:
  
     lea di, [di + 0x4000]             ; Point DI to the page table.
     mov eax, PAGE_PRESENT | PAGE_WRITE    ; Move the flags into EAX - and point it to 0x0000.
-    add eax, 0x200000
+    add dword eax, [boot_data_area]
     ; Build the Page Table.
 .LoopPageTable3:
     mov [es:di], eax
     add eax, 0x1000
     add di, 8
-    cmp eax, 0x400000                 ; If we did all 2MiB, end.
-    jb .LoopPageTable3
+    cmp di, 0x5000                 ; If we did all 2MiB, end.
+    jne .LoopPageTable3
 
     pop di                            ; Restore DI.
     push di                           ; Save DI for the time being.
@@ -95,18 +95,20 @@ SwitchToLongMode:
     
     lea di, [di + 0x5000]             ; Point DI to the page table.
     mov eax, PAGE_PRESENT | PAGE_WRITE    ; Move the flags into EAX - and point it to 0x0000.
-    add eax, 0x400000
+    add dword eax, [boot_data_area]
+    add eax, 0x200000
   
     ; Build the Page Table.
 .LoopPageTable2:
     mov [es:di], eax
     add eax, 0x1000
     add di, 8
-    cmp eax, 0x600000                 ; If we did all 2MiB, end.
-    jb .LoopPageTable2
+
+    cmp di, 0x6000                 ; If we did all 2MiB, end.
+    jne .LoopPageTable2
  
     pop di                            ; Restore DI.
- 
+
     ; Disable IRQs
     mov al, 0xFF                      ; Out 0xFF to 0xA1 and 0x21 to disable all IRQs.
     out 0xA1, al

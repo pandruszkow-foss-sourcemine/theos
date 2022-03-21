@@ -8,11 +8,23 @@ cpu: Cpu_X86;
 #program_export
 kernel_entry :: () {
 
-    //     << cast(*u64) 0xb8000 = 85204958398235235;
-    // print("Testing.");
-    // while true {}
+    offset  := << cast(*u16)  BOOT_DATA_AREA;
+    segment := << cast(*u16) (BOOT_DATA_AREA + 2);
 
+    address := ((cast(u64) segment) << 4) + offset;
+    random_seed = rdtsc();
+
+    buffer_size := 1024 * 768;
+    base := 0x200_000;
+    count := 0x400_000 / 8;
+
+    for 0x200_000..0x600_000-1 {
+            << cast(*u8) it = 0xff;
+    }
+
+    while true {}
     idt_init();
+
     pic_init();
     cmos_init();
     page_table_init();
@@ -22,7 +34,6 @@ kernel_entry :: () {
 
     vga_hide_cursor();
     vga_attribute(0x10, 3, set = false);
-    random_seed = rdtsc();
     enable_ps2_keyboard();
 
     clear_screen();
@@ -32,7 +43,7 @@ kernel_entry :: () {
 
     // pci_scan_all_devices();
     // pci_print_device_list();
-    // welcome_screen();
+    welcome_screen();
 
     // hda_detect();
     // vertical_divide();
@@ -60,7 +71,7 @@ crt_memcpy :: (dest: *u8, src: *u8, count: u64) -> *void #c_call {
 
 assert :: (condition: bool, call_site := #caller_location) {
     if !condition {
-        print("Assertion failure!\n");
+        print("Assertion failure!\n -> ");
         print(call_site.fully_pathed_filename);
         print(":");
         print(call_site.line_number);
@@ -284,6 +295,8 @@ END;
 
 
 welcome_screen :: () {
+    margin = 0;
+    indent = 0;
     clear_screen();
 
     print("\n\n");
@@ -453,10 +466,10 @@ print_hex :: (number: $T, decorate := true) {
     text_cursor += size * 2;
 }
 
-debug :: (message: string, number: int, hex := false) {
+debug :: (message: string, number: $T, $hex := false) {
     print(message);
     print(": ");
-    if hex print_hex(number);
+    #if hex print_hex(number);
     else print(number);
     print("\n");
 }
@@ -747,8 +760,8 @@ Page_Table_Flags :: enum_flags u64 {
 page_table_init :: () {
     using Page_Table_Flags;
 
-    pml4    [0] = cast(u64) (xx pdpt.data)     | PRESENT | READ_WRITE;
-    pdpt    [0] = cast(u64) (xx page_dir.data) | PRESENT | READ_WRITE;
+    pml4[0] = cast(u64) (xx pdpt.data)     | PRESENT | READ_WRITE;
+    pdpt[0] = cast(u64) (xx page_dir.data) | PRESENT | READ_WRITE;
 
     for t: 0..IDENTITY_MAP_SIZE - 1 {
         table: [] u64;
@@ -757,9 +770,9 @@ page_table_init :: () {
 
         page_dir[t] = cast(u64) (xx table.data) | PRESENT | READ_WRITE;
 
-        for 0..0x200 - 1 {
-            address := (it * 0x1000 + t * PAGE_TABLE_RANGE);
-            table[it] = cast(u64) (xx address) | PRESENT | READ_WRITE;
+        for page: 0..0x200 - 1 {
+            address := page * 0x1000 + t * PAGE_TABLE_RANGE;
+            table[page] = cast(u64) (xx address) | PRESENT | READ_WRITE;
         }
     }
 
