@@ -17,7 +17,11 @@
 [org 0x7c00]
 [bits 16]
 
+stack:
     jmp 0:start
+
+%include "generated.asm"
+
 start:
     mov [.boot_drive], dl
 
@@ -28,7 +32,7 @@ start:
     mov ds, ax
 
     ; === Stack registers ===
-    mov bp, start
+    mov bp, stack
     mov sp, bp
 
     ; === Video mode ===
@@ -49,6 +53,7 @@ start:
     mov bx, .greeting
     call write_string
 
+%if ENABLE_VESA
     ; === Get VESA info ===
     mov di, vbe_info_block
     mov ax, vbs_vesa_info
@@ -68,35 +73,33 @@ start:
     mov ax, vbs_vesa_mode_info
     int vbs
 
-%if PRINT_MODES
     ; === Display VESA mode parameters ===
-    pusha
-    mov bx, [bx]
-    call write_hex
-
-    mov bx, [vbe_mode.width]
-    call write_hex
-
-    mov bx, [vbe_mode.height]
-    call write_hex
-
-    xor bx, bx
-    mov byte bl, [vbe_mode.bpp]
-    call write_hex
-    call newline
-    popa
-%endif
+    ; pusha
+    ; mov bx, [bx]
+    ; call write_hex
+    ; 
+    ; mov bx, [vbe_mode.width]
+    ; call write_hex
+    ; 
+    ; mov bx, [vbe_mode.height]
+    ; call write_hex
+    ; 
+    ; xor bx, bx
+    ; mov byte bl, [vbe_mode.bpp]
+    ; call write_hex
+    ; call newline
+    ; popa
 
     add bx, 2
 
-    cmp word [vbe_mode.width], 1024
+    cmp word [vbe_mode.width], vesa_width
     jne .loop
-    cmp word [vbe_mode.height], 768
+    cmp word [vbe_mode.height], vesa_height
     jne .loop
-    cmp byte [vbe_mode.bpp], 24
+    cmp byte [vbe_mode.bpp], vesa_depth
     jne .loop
     mov ax, [vbe_mode.attributes]
-    test ax, 1<<7
+    test ax, 1 << 7
     jz .loop
 
     jmp .succeed
@@ -116,17 +119,20 @@ start:
 
     mov dword eax, [vbe_mode.buffer]
     mov dword [boot_data_area], eax
+%endif ; ENABLE_VESA
 
     ; === Switch to Long Mode ===
     mov edi, page_table_address
     jmp SwitchToLongMode
 
   .greeting: db 'Hello, sailor', 0xa, 0xd, 0
+
+%if ENABLE_VESA
   .vesa_fail: db '  No appropriate VESA mode was found, or VESA is not supported.', 0xa, 0xd, 0
+%endif
+
   .boot_drive: db 0
   .space: db ' ', 0
-
-%include "generated.asm"
 
 write_string:
     pusha
@@ -195,13 +201,12 @@ second_sector:
 
 [bits 64]
 long_mode_start:
-    mov rbp, start
+    mov rbp, stack
     mov rsp, rbp
 
     call load_kernel
 
     xor ebx, ebx
-
   .loop:
     cmp dword ebx, [kernel_section_table.count]
     je .end
@@ -222,7 +227,7 @@ long_mode_start:
     push rdi
 
     xor eax, eax
-    rep stosq
+    rep stosb
 
     pop rdi
     pop rax
@@ -286,6 +291,7 @@ load_kernel:
 
     ret
 
+%if ENABLE_VESA
 vbe_info_block:
   .signature:      dd 0
   .version:        dw 0
@@ -304,7 +310,8 @@ vbe_mode:
   .height:     dw 0
   times 0x3    db 0
   .bpp:        db 0
-  times 14     db 0
+  times 0xe    db 0
   .buffer:     dd 0
+%endif
 
 times (bootloader_sectors * 0x200)-($-$$) db 0

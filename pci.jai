@@ -225,6 +225,7 @@ pci_print_device_list :: () {
 
 hda_detect :: () {
     assert(pci_devices_scanned);
+
     for 0..pci_device_info.count-1 {
         info := pci_device_info[it];
         if info.header.class_code == .MULTIMEDIA && info.header.subclass == 0x3 {

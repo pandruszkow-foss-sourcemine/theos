@@ -2,53 +2,74 @@
 #import "Machine_X64";
 #load "elf/elf.jai";
 #load "pci.jai";
+#load "vga.jai";
+#load "config.jai";
 
 cpu: Cpu_X86;
 
+boot_data: struct {
+    vesa_framebuffer: u32;
+}
+
+USE_VGA :: !ENABLE_VESA;
+
 #program_export
 kernel_entry :: () {
+    boot_data = << cast(*type_of(boot_data)) BOOT_DATA_AREA;
 
-    offset  := << cast(*u16)  BOOT_DATA_AREA;
-    segment := << cast(*u16) (BOOT_DATA_AREA + 2);
-
-    address := ((cast(u64) segment) << 4) + offset;
-    random_seed = rdtsc();
-
-    buffer_size := 1024 * 768;
-    base := 0x200_000;
-    count := 0x400_000 / 8;
-
-    for 0x200_000..0x600_000-1 {
-            << cast(*u8) it = 0xff;
-    }
-
-    while true {}
     idt_init();
+
+    cpu = get_cpu_info();
+
+    clear_screen();
+    page_table_init();
+
+    map_page(0xf00_000, 0x7000);
+    print_hex(get_physical_address(xx (0xf00_000)));
+    print("\nDoing stuff\n");
+    print_hex(<< cast(*u16) (0xf00_000 + 0xc00 + 0x1fe));
 
     pic_init();
     cmos_init();
-    page_table_init();
 
-    pci_scan_all_devices();
-    cpu = get_cpu_info();
+    // print("Scanning pci devices");
+    // pci_scan_all_devices();
+    // print("Done");
 
     vga_hide_cursor();
-    vga_attribute(0x10, 3, set = false);
-    enable_ps2_keyboard();
+    // vga_attribute(0x10, 3, set = false);
+    // enable_ps2_keyboard();
 
-    clear_screen();
-    // read_zip_files();
+    // clear_screen();
+    buffer := cast(*void) 0x200_000;
+    ata_pio_read(xx buffer, (MAILBAG_LOCATION + 0x100) / 0x200, (MAILBAG_SIZE + 0x100) / 0x200);
+
+    x: string;
+    x.data = xx buffer;
+    x.count = vga_rows * vga_columns;
+    print(x);
+    while true {}
+
+    read_zip_files(buffer);
+
+    print("Doing stuff.\n");
+    for 0..file_count {
+        file := files[it];
+        ti := type_info(File_Type);
+        print(file.name);
+        print(": ");
+        print(ti.names[file.type]);
+        print("\n");
+    }
     // load_elf(0);
     // print("\nExecuted the program.\n");
 
-    // pci_scan_all_devices();
     // pci_print_device_list();
-    welcome_screen();
+    // welcome_screen();
 
     // hda_detect();
-    // vertical_divide();
 
-    page_table_init();
+    // page_table_init();
 
     while true {};
     wait(50);
@@ -69,16 +90,18 @@ crt_memcpy :: (dest: *u8, src: *u8, count: u64) -> *void #c_call {
     return dest;
 }
 
-assert :: (condition: bool, call_site := #caller_location) {
+assert :: (condition: bool, message: string = "", call_site := #caller_location) {
     if !condition {
         print("Assertion failure!\n -> ");
         print(call_site.fully_pathed_filename);
         print(":");
         print(call_site.line_number);
         print("\n");
+        print(message);
+        print("\n");
 
         while true {
-            // #asm { hlt; }
+            #asm { hlt; }
         }
     }
 }
@@ -282,283 +305,6 @@ enable_ps2_keyboard :: () {
 
 
 
-TITLE :: #string END
-        /##     /##                                                  
-       | ##    | ##                                                  
-      /######  | #######   /######   /######   /#######              
-     |_  ##_/  | ##__  ## /##__  ## /##__  ## /##_____/              
-       | ##    | ##  \ ##| ########| ##  \ ##|  ######               
-       | ## /##| ##  | ##| ##_____/| ##  | ## \____  ##              
-       |  ####/| ##  | ##|  #######|  ######/ /#######/              
-        \___/  |__/  |__/ \_______/ \______/ |_______/               
-END;
-
-
-welcome_screen :: () {
-    margin = 0;
-    indent = 0;
-    clear_screen();
-
-    print("\n\n");
-    print(TITLE);
-    print("\n");
-
-    old_foreground := theme.normal;
-    theme.normal = theme.foreground;
-    print("      Hello, sailor.\n");
-    print("      Boot time is ");
-
-    print(weekdays[cmos_read(.WEEKDAY) - 1]);
-    print(" ");
-    print(months[cmos_read(.MONTH) - 1]);
-    print(" ");
-    print(cmos_read(.DAY_OF_THE_MONTH));
-    print(", ");
-    print(cmos_read(.YEAR) + 2000);
-    print(", ");
-
-    hours := cmos_read(.HOURS);
-    if hours < 10 print("0"); print(hours);
-    print(":");
-
-    minutes := cmos_read(.MINUTES);
-    if minutes < 10 print("0"); print(minutes);
-    print(":");
-
-    seconds := cmos_read(.SECONDS);
-    if seconds < 10 print("0"); print(seconds);
-    print(".\n");
-
-    print("      There are ");
-    print(file_count);
-    print(" files in the mailbag.\n");
-
-    print("\n");
-    theme.normal = old_foreground;
-
-    ti := type_info(x86_Feature_Flag);
-    print("      Supported CPU features: -------------------------------------------", theme.foreground);
-    flags_on_this_line: int;
-    for 0..ti.names.count-1 {
-        if check_feature(cpu.feature_leaves, xx ti.values[it]) {
-            name := ti.names[it];
-            if name.count >= 8 continue;
-
-            if (flags_on_this_line % 7) == 0 print("\n      ");
-
-            print("| ", theme.foreground);
-            print(name, theme.highlight);
-            for 1..8 - name.count  print(" ");
-            flags_on_this_line += 1;
-        }
-    }
-    print("\n      -------------------------------------------------------------------\n", theme.foreground);
-
-    print("      Compiled using ");
-    print("Jai ", theme.accent);
-    print(COMPILER_VERSION, theme.accent);
-    print(".\n");
-}
-
-
-
-vga_columns :: 80;
-vga_rows    :: 25;
-
-indent: int;
-margin: int = 2;
-ceiling: int = 5;
-
-text_cursor: int;
-vga_screen :: cast(*u8) 0xb8000;
-
-get_attribute :: () -> u8 {
-    return cast(u8) theme.normal | (theme.background << 4);
-}
-
-vertical_divide :: () {
-    furthest: int;
-
-    for y: 0..vga_rows - 1 {
-        for x: 0..vga_columns - 1 {
-            cell := y * vga_columns + x;
-            if vga_screen[cell * 2] != 0 && vga_screen[cell * 2] != #char " " {
-                if x > furthest furthest = x;
-            }
-        }
-    }
-
-    for 0..vga_rows-1 {
-        cell := it * vga_columns + furthest + 3;
-        vga_screen[cell * 2] = 0xba;
-    }
-
-    indent = furthest + 4;
-    text_cursor = margin;
-}
-
-print :: (text: string, foreground: Vga_Color = 255, background: Vga_Color = 255) {
-    fg := ifx foreground == 255 then theme.normal else xx foreground;
-    bg := ifx background == 255 then theme.background else xx background;
-
-    for cast([] u8) text {
-        if it == 10 {
-            distance := text_cursor % vga_columns;
-            text_cursor += vga_columns - distance;
-            text_cursor += margin;
-            continue;
-        }
-
-        if it == 13 continue;
-
-        i := text_cursor + indent;
-        if (i+1) % vga_columns == 0 {
-            text_cursor += indent + margin + margin;
-        }
-
-        vga_screen[i * 2]     = it;
-        vga_screen[i * 2 + 1] = cast(u8) fg | (bg << 4);
-
-        text_cursor += 1;
-    }
-}
-
-print :: (number: int, color: Vga_Color = 255) {
-    c := color;
-    if c == 255 c = theme.foreground;
-
-    negative: bool;
-    buffer: [30] u8 = ---;
-
-    _number := number;
-    if number < 0 _number *= -1;
-
-    for 0..buffer.count - 1 {
-        rem := _number % 10;
-        buffer[29 - it] =  #char "0" + cast(u8) rem;
-        _number /= 10;
-
-        if _number == 0 {
-            result: string = ---;
-            result.data = buffer.data + 29 - it;
-            result.count = it + 1;
-            print(result, color);
-            return;
-        }
-    }
-}
-
-print_hex :: (number: $T, decorate := true) {
-    #assert type_info(T).type == .INTEGER;
-    size := #run type_info(T).runtime_size;
-
-    if decorate print("0x");
-
-    table := "0123456789abcdef";
-    for 0..size * 2 - 1 {
-        index := number >> (it * 4);
-        index &= 0xf;
-
-        cur := (text_cursor + indent + size * 2 - it - 1) * 2;
-        vga_screen[cur] = table[index];
-        vga_screen[cur + 1] = get_attribute();
-    }
-    text_cursor += size * 2;
-}
-
-debug :: (message: string, number: $T, $hex := false) {
-    print(message);
-    print(": ");
-    #if hex print_hex(number);
-    else print(number);
-    print("\n");
-}
-
-clear_screen :: () {
-    for 0..vga_columns * vga_rows - 1 {
-        vga_screen[it * 2]     = 0;
-        vga_screen[it * 2 + 1] = get_attribute();
-    }
-    text_cursor = 0;
-}
-
-theme: struct {
-    background : Vga_Color = .BLACK;
-    foreground : Vga_Color = .WHITE;
-    normal     : Vga_Color = .CYAN;
-    highlight  : Vga_Color = .LIGHT_CYAN;
-    accent     : Vga_Color = .RED;
-}
-
-Vga_Register :: enum u16 {
-    ATTRIBUTE_ADDRESS :: 0x3c0;
-    DATA_READ         :: 0x3c1;
-    DAC_PALETTE_MASK  :: 0x3c6;
-    DAC_STATE         :: 0x3c7;
-    DAC_ADDRESS_READ  :: 0x3c7;
-    DAC_ADDRESS_WRITE :: 0x3c8;
-    DAC_DATA          :: 0x3c9;
-    CRT_CONTROL_INDEX :: 0x3d4;
-    CRT_CONTROL_DATA  :: 0x3d5;
-    INPUT_STATUS      :: 0x3da;
-}
-
-vga_hide_cursor :: () {
-    using Vga_Register;
-
-    port_write(xx CRT_CONTROL_INDEX, 0x0a);
-    port_write(xx CRT_CONTROL_DATA,  0x20);
-}
-
-vga_set_palette_entry :: (index: u8, red: u8, green: u8, blue: u8) {
-    using Vga_Register;
-
-    port_write(xx DAC_PALETTE_MASK, 0xff);
-    port_write(xx DAC_ADDRESS_WRITE, index);
-    port_write(xx DAC_DATA, red);
-    port_write(xx DAC_DATA, green);
-    port_write(xx DAC_DATA, blue);
-}
-
-vga_attribute :: (register_name: u8, bit: u8, set: bool = true) {
-    using Vga_Register;
-
-    PAS : u8 :    1 << 5;
-    mask: u8 = xx 1 << bit;
-
-    port_read(xx INPUT_STATUS);
-    address := port_read(xx ATTRIBUTE_ADDRESS);
-    port_write(xx ATTRIBUTE_ADDRESS, register_name | PAS);
-
-    data := port_read(xx DATA_READ);
-    if set data |=  mask;
-    else   data &= ~mask;
-
-    port_write(xx ATTRIBUTE_ADDRESS, data);
-    port_write(xx ATTRIBUTE_ADDRESS, address);
-}
-
-Vga_Color :: enum u8 {
-    BLACK         :: 0x00;
-    BLUE          :: 0x01;
-    GREEN         :: 0x02;
-    CYAN          :: 0x03;
-    RED           :: 0x04;
-    MAGENTA       :: 0x05;
-    BROWN         :: 0x06;
-    WHITE         :: 0x07;
-    GRAY          :: 0x08;
-    LIGHT_BLUE    :: 0x09;
-    LIGHT_GREEN   :: 0x0a;
-    LIGHT_CYAN    :: 0x0b;
-    LIGHT_RED     :: 0x0c;
-    LIGHT_MAGENTA :: 0x0d;
-    YELLOW        :: 0x0e;
-    BRIGHT_WHITE  :: 0x0f;
-}
-
-
-
 cmos_format: struct {
     bcd_mode: bool;
     twenty_four_h: bool;
@@ -737,15 +483,31 @@ gol :: () {
 
 
 
-IDENTITY_MAP_SIZE :: 8;
+/* Memory map:
+
+4Mb is identity mapped.
+
+0Mb -> 1Mb: Bootloader, BIOS
+1Mb -> 2Mb: Kernel code + data
+
+4Mb -> 12Mb: Video
+
+*/
+
+VIDEO_MEMORY_BASE :: IDENTITY_MAP_SIZE;
+VIDEO_MEMORY_SIZE :: 0x400_000;
+IDENTITY_MAP_SIZE :: 0x800_000;
 PAGE_TABLE_RANGE :: 0x200_000;
 
-page_tables: [IDENTITY_MAP_SIZE][0x200] u64 #align 0x1000;
+PAGE_TABLE_COUNT :: (VIDEO_MEMORY_SIZE + IDENTITY_MAP_SIZE) / PAGE_TABLE_RANGE;
+#assert (PAGE_TABLE_COUNT <= 0x200);
+
+page_tables: [PAGE_TABLE_COUNT][0x200] u64 #align 0x1000;
 page_dir: [0x200] u64 #align 0x1000;
 pdpt:     [0x200] u64 #align 0x1000;
 pml4:     [0x200] u64 #align 0x1000;
 
-Page_Table_Flags :: enum_flags u64 {
+Page_Flags :: enum_flags u64 {
     PRESENT         :: 1 << 0;
     READ_WRITE      :: 1 << 1;
     USER_SUPERVISOR :: 1 << 2;
@@ -757,31 +519,132 @@ Page_Table_Flags :: enum_flags u64 {
     EXECUTE_DISABLE :: 1 << 63;
 }
 
+VIRTUAL_OFFSET :: 0xffff_ff80_0000_0000;
+offset_pdpt: [0x200] u64 #align 0x1000;
+
+ONE_GB :: 0x4000_0000;
+
 page_table_init :: () {
-    using Page_Table_Flags;
+    using Page_Flags;
 
-    pml4[0] = cast(u64) (xx pdpt.data)     | PRESENT | READ_WRITE;
-    pdpt[0] = cast(u64) (xx page_dir.data) | PRESENT | READ_WRITE;
+    assert(check_feature(cpu.feature_leaves, .PDPE1GB), "For the present, this OS requires 1GB pages to be supported");
 
-    for t: 0..IDENTITY_MAP_SIZE - 1 {
+    pml4[0x1ff] = cast(u64) (xx offset_pdpt.data) | PRESENT | READ_WRITE;
+    for 0..0x200-1 {
+        address := it * ONE_GB;
+        offset_pdpt[it] = cast(u64) (xx address)  | PRESENT | READ_WRITE | PAGE_SIZE;
+    }
+
+    pml4[0]     = cast(u64) (xx pdpt.data)        | PRESENT | READ_WRITE;
+    pdpt[0]     = cast(u64) (xx page_dir.data)    | PRESENT | READ_WRITE;
+
+    page_tables_in_identity_map :: IDENTITY_MAP_SIZE / PAGE_TABLE_RANGE;
+
+    for t: 0..page_tables_in_identity_map - 1 {
         table: [] u64;
         table.data = page_tables[t].data;
         table.count = 0x200;
 
-        page_dir[t] = cast(u64) (xx table.data) | PRESENT | READ_WRITE;
-
+        page_dir[t] = cast(u64) (xx table.data)   | PRESENT | READ_WRITE;
         for page: 0..0x200 - 1 {
             address := page * 0x1000 + t * PAGE_TABLE_RANGE;
-            table[page] = cast(u64) (xx address) | PRESENT | READ_WRITE;
+            table[page] = cast(u64) (xx address)  | PRESENT | READ_WRITE;
         }
     }
 
-    address := random() % (PAGE_TABLE_RANGE * IDENTITY_MAP_SIZE);
-    assert(get_physical_address(xx address) == address);
+    pml4_base := pml4.data;
+    PAGE_SIZE_BIT :: 1 << 4;
+    #asm {
+        get_cr4 cr4:;
+        or cr4, PAGE_SIZE_BIT;
+        set_cr4 cr4;
+
+        set_cr3 pml4_base;
+    }
+
+    #if ENABLE_VESA {
+        page_tables_for_video_memory :: VIDEO_MEMORY_SIZE / PAGE_TABLE_RANGE;
+        for 0..page_tables_for_video_memory - 1 {
+            index := it + page_tables_in_identity_map;
+    
+            table: [] u64;
+            table.data = page_tables[index].data;
+            table.count = 0x200;
+    
+            page_dir[index] = cast(u64) (xx table.data) | PRESENT | READ_WRITE;
+            for page: 0..0x200 - 1 {
+                address := page * 0x1000 + it * PAGE_TABLE_RANGE + boot_data.vesa_framebuffer;
+                table[page] = cast(u64) (xx address)    | PRESENT | READ_WRITE;
+            }
+        }
+    }
 }
 
-get_physical_address :: (virtual_address: *void) -> u64 {
-    using Page_Table_Flags;
+get_or_create_page_table_entry :: (table: *u64, entry: u64) -> *u64 {
+    using Page_Flags;
+
+    if table[entry] & xx PRESENT {
+        phys := table[entry] & (~0xfff);
+        return xx (phys + VIRTUAL_OFFSET);
+    }
+
+    phys := get_new_page_frame();
+    table[entry] = phys | cast(u64) (PRESENT | READ_WRITE);
+    return cast(*u64) (phys + VIRTUAL_OFFSET);
+}
+
+map_page :: (virtual_address: u64, physical_address: u64, loc := #caller_location) -> bool {
+    using Page_Flags;
+
+    mask: u64 = 0b111111111;
+    pml4_offset := (virtual_address >> 39) & mask;
+    pdpt_offset := (virtual_address >> 30) & mask;
+    pd\ _offset := (virtual_address >> 21) & mask;
+    pt\ _offset := (virtual_address >> 12) & mask;
+
+    pdpt := get_or_create_page_table_entry(pml4.data, pml4_offset);
+    pd   := get_or_create_page_table_entry(pdpt,      pdpt_offset);
+    pt   := get_or_create_page_table_entry(pd,        pd_offset);
+    assert(!(pt[pt_offset] & xx PRESENT), "Attempting to map a page that is already mapped", loc);
+
+    pt[pt_offset] = physical_address | cast(u64) (PRESENT | READ_WRITE);
+
+    // #asm {
+    //     get_cr3 cr3:;
+    //     set_cr3 cr3;
+    // }
+    return true;
+}
+
+PAGE_FRAME_BASE :: 0xd00_000;
+page_frame_watermark: int;
+
+get_new_page_frame :: (count: int = 1) -> u64 {
+    address := page_frame_watermark * 0x1000 + PAGE_FRAME_BASE;
+    page_frame_watermark += count;
+    memset(xx (address + VIRTUAL_OFFSET), 0, 0x1000);
+    return xx address;
+}
+
+/*
+virtual_watermark: int;
+map_physical_region :: (physical_base: u64, limit: u64) -> *void {
+    VIRTUAL_WATERMARK_BASE :: VIDEO_MEMORY_BASE + VIDEO_MEMORY_SIZE;
+    address := virtual_watermark * 0x1000 + VIRTUAL_WATERMARK_BASE;
+
+    assert(limit % 0x1000 == 0);
+    pages_required := limit / 0x1000;
+
+    for 0..pages_required - 1 {
+
+        address += 0x1000;
+    }
+
+}
+*/
+
+get_physical_address :: (virtual_address: *void) -> u64, present: bool {
+    using Page_Flags;
     x := cast(u64) virtual_address;
 
     mask: u64 = 0b111111111;
@@ -793,18 +656,23 @@ get_physical_address :: (virtual_address: *void) -> u64 {
     page_offset := x & 0xfff;
 
     ReadTableEntry :: (index: u64, table_address: u64) -> entry: u64 #expand {
-        assert((xx table_address) & PRESENT > 0);
+        if !((xx table_address) & PRESENT) `return 0, false; //`
 
-        table := cast(*u64) (table_address & (~0xfff));
+        table := cast(*u64) (table_address & (~0xfff) + VIRTUAL_OFFSET);
         return table[index];
     }
 
     pml4e := pml4[pml4_offset];
     pdpte := ReadTableEntry(pdpt_offset, pml4e);
+    if pdpte & xx PAGE_SIZE {
+        page_offset := x & 0x3fff_ffff;
+        return (pdpte & ~0xfff) + page_offset, true;
+    }
+
     pde   := ReadTableEntry(pd\ _offset, pdpte);
     pte   := ReadTableEntry(pt\ _offset, pde);
 
-    return (pte & ~0xfff) + page_offset;
+    return (pte & ~0xfff) + page_offset, true;
 }
 
 
@@ -927,10 +795,20 @@ Zip_Entry :: struct {
     chunk_offset:        u32 #align 2;
 } #no_padding
 
+File_Type :: enum {
+    UNKNOWN;
+    TEXT;
+    BINARY_EXECUTABLE;
+    BINARY_DATA;
+    PICTURE;
+    SOUND;
+}
+
 File_Desc :: struct {
     name: string;
     data: *u8;
     size: int;
+    type: File_Type;
 }
 
 files: [10] File_Desc;
@@ -940,10 +818,10 @@ ZIP_EOCD_SIGNATURE :: 0x06054b50;
 ZIP_CD\ _SIGNATURE :: 0x02014b50;
 ZIP_LOCAL_HEADER_SIZE :: 0x1e;
 
-read_zip_files :: () {
+read_zip_files :: (buffer: *void) {
     cursor: int;
     for 0..MAILBAG_SIZE - 1 {
-        cursor = MAILBAG_SIZE + 0x200_000 - it;
+        cursor = MAILBAG_SIZE + xx buffer - it;
         if << cast(*u32) cursor == ZIP_EOCD_SIGNATURE {
             break;
         }
@@ -954,18 +832,27 @@ read_zip_files :: () {
 
     cursor += 6;
     directory_location := << cast(*u32) cursor;
-
-    cursor = directory_location + 0x200_000;
+    print_hex(directory_location);
+    while true {}
+    cursor = directory_location + xx buffer;
     for 0..entry_count - 1 {
         header := << cast(*Zip_Entry) cursor;
-        assert(header.signature == ZIP_CD_SIGNATURE);
+        assert(header.signature == ZIP_CD_SIGNATURE, "Attempted to read zip file, not valid.");
 
         file: File_Desc;
         file.name.data = xx (cursor + 46);
         file.name.count = header.name_len;
 
         file.size = header.compressed_len;
-        file.data = xx (0x200_000 + header.chunk_offset + ZIP_LOCAL_HEADER_SIZE + header.name_len);
+        file.data = xx (xx buffer + header.chunk_offset + ZIP_LOCAL_HEADER_SIZE + header.name_len);
+
+        if file.name.count > 4 {
+            extension: string;
+            extension.count = 4;
+            extension.data = *file.name[file.name.count - 5];
+            if extension == ".txt" file.type = .TEXT;
+            else if extension == ".pgm" file.type = .PICTURE;
+        }
 
         files[file_count] = file;
         file_count += 1;

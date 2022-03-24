@@ -1,6 +1,7 @@
 
 #load "modules/Nasm.jai";
 #load "elf/elf.jai";
+#load "config.jai";
 
 #if OS == .WINDOWS {
     generate_elf_bindings :: () {
@@ -21,10 +22,8 @@ ISR_DECLARATION :: #string ISR
 isr_slot_0x% :: () #c_call {
     c: Context;
     push_context c {
-        clear_screen();
-
-        print("\n\n       AN EXCEPTION HAS OCCURED:  ");
-        print("%\n\n", theme.accent);
+        print("\n       AN EXCEPTION HAS OCCURED:  ");
+        print("%\n", theme.accent);
     }
 
     while true {}
@@ -76,13 +75,13 @@ interrupts: [] struct { message: string; slot: int; } = .[
     zip := read_entire_file("the_mailbag.zip");
 
     BOOTLOADER_SECTOR_COUNT :: 5;
-    BOOT_DATA_AREA       :: 0x8000;
-    BOOT_DATA_SIZE       :: 0x1000;
+    BOOT_DATA_AREA          :: 0x8000;
+    BOOT_DATA_SIZE          :: 0x1000;
 
-    PAGE_TABLE_ADDRESS   :: BOOT_DATA_AREA + BOOT_DATA_SIZE;
-    PAGE_TABLE_SIZE      :: 0x6000;
+    PAGE_TABLE_ADDRESS      :: BOOT_DATA_AREA + BOOT_DATA_SIZE;
+    PAGE_TABLE_SIZE         :: 0x6000;
 
-    KERNEL_START_ADDRESS :: PAGE_TABLE_ADDRESS + PAGE_TABLE_SIZE;
+    KERNEL_START_ADDRESS    :: PAGE_TABLE_ADDRESS + PAGE_TABLE_SIZE;
 
     write_string("\n=== Compiling Kernel ===\n");
     {
@@ -267,6 +266,11 @@ interrupts: [] struct { message: string; slot: int; } = .[
             append(*generated_asm, tprint("bootloader_sectors    equ 0x%\n", BOOTLOADER_SECTOR_COUNT));
             append(*generated_asm, tprint("boot_data_area        equ 0x%\n", BOOT_DATA_AREA));
 
+            append(*generated_asm, tprint("\n%%define ENABLE_VESA %\n", cast(int) ENABLE_VESA));
+            append(*generated_asm, tprint("vesa_width  equ 0x%\n", VESA_WIDTH));
+            append(*generated_asm, tprint("vesa_height equ 0x%\n", VESA_HEIGHT));
+            append(*generated_asm, tprint("vesa_depth  equ 0x%\n", VESA_DEPTH));
+
             append(*generated_asm, "\nkernel_section_table:\n");
             kernel_binary: String_Builder;
 
@@ -284,6 +288,7 @@ interrupts: [] struct { message: string; slot: int; } = .[
                 append(*generated_asm, tprint("    dd 0x%\t\t; Target address (VMA)\n", header.p_vaddr));
                 append(*generated_asm, tprint("    dd 0x%\t\t; Source address (LMA)\n", kernel_offset));
                 append(*generated_asm, tprint("    dd 0x%\t\t; Bytes to zero clear\n",  header.p_memsz));
+                assert(header.p_memsz % 4 == 0);
                 append(*generated_asm, tprint("    dd 0x%\t\t; Bytes to copy\n",        header.p_filesz));
 
                 // print("Header:\n%\n", << header);
@@ -291,17 +296,6 @@ interrupts: [] struct { message: string; slot: int; } = .[
                 append(*kernel_binary, elf.data + header.p_offset, xx header.p_filesz);
                 kernel_offset += xx header.p_filesz;
             }
-
-            append(*kernel_binary, zip);
-
-            section_count += 1;
-            append(*generated_asm, tprint("  .section_%:\t\t ; The mailbag\n", section_count));
-            append(*generated_asm, tprint("    dd 0x%\t\t; Target address (VMA)\n", 0x200_000));
-            append(*generated_asm, tprint("    dd 0x%\t\t; Source address (LMA)\n", kernel_offset));
-            append(*generated_asm, tprint("    dd 0x%\t\t; Bytes to zero clear\n",  0));
-            append(*generated_asm, tprint("    dd 0x%\t\t; Bytes to copy\n",        zip.count));
-
-            print("Mailbag size: %\n", zip.count);
 
             kernel_size := builder_string_length(*kernel_binary);
             write_entire_file(".build/kernel.bin", builder_to_string(*kernel_binary));
@@ -324,22 +318,24 @@ interrupts: [] struct { message: string; slot: int; } = .[
 
     write_string("\n=== Creating Disk Image ===\n");
     {
-        boot_sector := read_entire_file(".build/boot_sector.bin");
-        kernel      := read_entire_file(".build/kernel.bin");
+        DISK_SIZE :: 0x100_000;
+        disk_image := cast(*u8) alloc(DISK_SIZE);
+        cursor: int;
 
-        theos       := join(boot_sector, kernel);
+        boot_loader := file_open(".build/boot_loader.bin");
+        file_read(boot_loader, disk_image + cursor, file_length(boot_loader));
+        cursor += file_length(boot_loader);
 
-        BOCHS_MINIMUM_DISK_SIZE :: 0x100_000;
-        padding_size := BOCHS_MINIMUM_DISK_SIZE - theos.count;
-        print("Padding size: %\n", padding_size);
+        kernel := file_open(".build/kernel.bin");
+        file_read(kernel, disk_image + cursor, file_length(kernel));
+        cursor += file_length(kernel);
 
-        assert(padding_size >= 0, "Kernel too large, pad to the nearest sector");
+        assert(cursor < MAILBAG_LOCATION);
+        cursor = MAILBAG_LOCATION;
 
-        padding := cast(*u8) alloc(padding_size);
-        memset(padding, 0, padding_size);
+        memcpy(disk_image + cursor, zip.data, zip.count);
 
-        theos = join(theos, to_string(padding, padding_size));
-        write_entire_file("theos", theos);
+        write_entire_file("theos", disk_image, DISK_SIZE);
 
         cp_command := string.["cp", "theos", "theos.img"];
         os_run_command(.. cp_command, capture_and_return_output = true);
@@ -348,7 +344,7 @@ interrupts: [] struct { message: string; slot: int; } = .[
 
 assemble :: () -> bool {
     options: Nasm_Options;
-    options.outfile = ".build/boot_sector.bin";
+    options.outfile = ".build/boot_loader.bin";
     options.format = .BIN;
     options.input_file_name = "boot.asm";
     options.warnings |= .ALL;
@@ -371,12 +367,12 @@ assemble :: () -> bool {
         write_string("Assembly success!\n");
     }
 
-    od_command := string.["od", "-t", "x1z", "-A", "x", "-v", ".build/boot_sector.bin"];
+    od_command := string.["od", "-t", "x1z", "-A", "x", "-v", ".build/boot_loader.bin"];
     success, error_code, stdout, stderr = os_run_command(.. od_command, capture_and_return_output = true);
     if !success || error_code != 0 {
         write_string("od failed to run!\n");
     }
-    else write_entire_file(".build/boot_sector.hex.txt", stdout);
+    else write_entire_file(".build/boot_loader.hex.txt", stdout);
 
     return true;
 }
