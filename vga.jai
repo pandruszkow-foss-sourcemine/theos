@@ -210,9 +210,8 @@ clear_screen :: () {
         }
         text_cursor = 0;
     } else {
-        buffer_size := VESA_WIDTH * VESA_HEIGHT;
-        for 0..buffer_size / 2 - 1 {
-            << (cast(*u64) VIDEO_MEMORY_BASE + it) = 0x0060303800603038;
+        for 0..vesa.buffer_size / 2 - 1 {
+            << (cast(*u64) vesa.framebuffer + it) = 0x0060303800603038;
         }
     }
 }
@@ -293,4 +292,29 @@ Vga_Color :: enum u8 {
     LIGHT_MAGENTA :: 0x0d;
     YELLOW        :: 0x0e;
     BRIGHT_WHITE  :: 0x0f;
+}
+
+
+
+
+
+
+
+
+
+
+
+USE_VGA :: !ENABLE_VESA;
+
+Vesa :: struct {
+    framebuffer: *u32;
+    buffer_size: int;
+}
+
+vesa: Vesa;
+
+init_vesa :: (boot_data: Boot_Data) {
+    #if !ENABLE_VESA return;
+    vesa.buffer_size = VESA_WIDTH * VESA_HEIGHT * VESA_DEPTH / 8;
+    vesa.framebuffer = xx map_region(vesa.buffer_size, physical_address = boot_data.vesa_framebuffer);
 }

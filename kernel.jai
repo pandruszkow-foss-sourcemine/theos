@@ -7,73 +7,30 @@
 
 cpu: Cpu_X86;
 
-boot_data: struct {
+Boot_Data :: struct {
     vesa_framebuffer: u32;
 }
-
-USE_VGA :: !ENABLE_VESA;
+boot_data: Boot_Data;
 
 #program_export
 kernel_entry :: () {
     boot_data = << cast(*type_of(boot_data)) BOOT_DATA_AREA;
 
     idt_init();
+    // pic_init();
+    //cmos_init();
 
     cpu = get_cpu_info();
-
-    clear_screen();
     page_table_init();
-
-    map_page(0xf00_000, 0x7000);
-    print_hex(get_physical_address(xx (0xf00_000)));
-    print("\nDoing stuff\n");
-    print_hex(<< cast(*u16) (0xf00_000 + 0xc00 + 0x1fe));
-
-    pic_init();
-    cmos_init();
-
-    // print("Scanning pci devices");
-    // pci_scan_all_devices();
-    // print("Done");
-
-    vga_hide_cursor();
-    // vga_attribute(0x10, 3, set = false);
-    // enable_ps2_keyboard();
-
-    // clear_screen();
-    buffer := cast(*void) 0x200_000;
-    ata_pio_read(xx buffer, (MAILBAG_LOCATION + 0x100) / 0x200, (MAILBAG_SIZE + 0x100) / 0x200);
-
-    x: string;
-    x.data = xx buffer;
-    x.count = vga_rows * vga_columns;
-    print(x);
-    while true {}
-
-    read_zip_files(buffer);
-
-    print("Doing stuff.\n");
-    for 0..file_count {
-        file := files[it];
-        ti := type_info(File_Type);
-        print(file.name);
-        print(": ");
-        print(ti.names[file.type]);
-        print("\n");
-    }
-    // load_elf(0);
-    // print("\nExecuted the program.\n");
-
-    // pci_print_device_list();
-    // welcome_screen();
-
-    // hda_detect();
-
-    // page_table_init();
-
+    enable_simd(cpu);
+    // v := map_region(1920 * 1080 * 4, physical_address = boot_data.vesa_framebuffer);
+    // for 0..1000000 {
+    //         <<  (cast(*u64) v + it) = 0xffffffffffffffff;
+    // }
+    init_vesa(boot_data);
+    clear_screen();
+    // print("Done.");
     while true {};
-    wait(50);
-    gol();
 }
 
 crt_memset :: (target: *u8, value: s32, count: u64) -> *void #c_call {
@@ -173,6 +130,35 @@ random :: (state: *u64 = *random_seed) -> u64 {
 
 wait :: (time: int = 10) {
     for 1..1000 * time { x := it; }
+}
+
+enable_simd :: (cpu: Cpu_X86) -> bool {
+    CR0_MP         ::   1 << 1;
+    CR0_EM_CLEAR   :: ~(1 << 2);
+    CR4_\   OSFXSR ::   1 << 9;
+    CR4_OSXMMEXCPT ::   1 << 10;
+    CR4_OSXSAVE    ::   1 << 18;
+
+    supported := check_feature(cpu.feature_leaves, .SSE);
+    if supported #asm {
+        get_cr0 cr0:;
+        and cr0, CR0_EM_CLEAR;
+        or  cr0, CR0_MP;
+        set_cr0 cr0;
+
+        get_cr4 cr4:;
+        or  cr4, CR4_OSFXSR;
+        or  cr4, CR4_OSXMMEXCPT;
+        set_cr4 cr4;
+    }
+
+    if check_feature(cpu.feature_leaves, .OSXSAVE) #asm {
+        get_cr4 cr4:;
+        or  cr4, CR4_OSXSAVE;
+        set_cr4 cr4;
+    }
+
+    return supported;
 }
 
 
@@ -376,113 +362,6 @@ weekdays :: string.[
     "Saturday",
 ];
 
-/*
-p :: (value: u64) -> bool {
-    return (random(*seed) % value) == 0;
-}
-
-width := 640;
-height := 480;
-
-funky :: () {
-    range: u8 = 72;
-    base:  u8 = 0x20;
-    count: u8 = 5;
-
-    for 0..width * height - 1 {
-        vga_screen[it] = 0;
-    }
-
-    for 0..10000000 for 0..width * height * 2 - 1 {
-        if !p(1)  continue;
-        color := vga_screen[it];
-
-        if color == 0 && p(2000) {
-            vga_screen[it] = (base + cast(u8) random(*seed) % 10) * 3;
-        }
-        else if color >= base && color < base + range + range {
-
-            if p(1) {
-                x := random(cast(*s64) *seed) % 2;
-                y := random(cast(*s64) *seed) % 2;
-                other := vga_screen[it + x + y * width]; // = vga_screen[it];
-                if (other % 2) != (color % 2)  vga_screen[it] = other;
-                else vga_screen[it + x + y * width] = vga_screen[it];
-            }
-
-            if p(3) vga_screen[it] += range;
-        }
-        else vga_screen[it] = 0;
-    }
-}
-*/
-
-
-gol :: () {
-    width := vga_columns;
-    height := vga_rows;
-
-    count := width * height;
-    buffer_a: *u8 = xx 0x130000;
-    buffer_b: *u8 = buffer_a + count;
-
-    for 0..count - 1 {
-        c := vga_screen[it * 2];
-        buffer_a[it] = xx (c != 0 && c != #char " ");
-        if buffer_a[it] > 0 vga_screen[it * 2 + 1] = 0x0f;
-        else                vga_screen[it * 2 + 1] = 0xf0;
-
-        wait(3);
-    }
-    wait(10000);
-
-    read :: (x: int, y: int) -> bool #expand {
-        if y < 0        y += height;
-        if y > height-1 y -= height;
-        if x < 0        x += width;
-        if x > width-1  x -= width;
-
-        return buffer_a[x + y * width] > 0;
-    }
-
-    write :: (x: int, y: int, value: bool) #expand {
-        index := x + y * width;
-        if value buffer_b[index] = 1;
-        else buffer_b[index] = 0;
-    }
-
-    while true {
-        for y: 0..height-1 for x: 0..width-1 {
-            sum: int;
-            sum += xx read(x-1, y-1);
-            sum += xx read(x-1, y  );
-            sum += xx read(x-1, y+1);
-            sum += xx read(x  , y-1);
-
-            sum += xx read(x  , y+1);
-            sum += xx read(x+1, y-1);
-            sum += xx read(x+1, y  );
-            sum += xx read(x+1, y+1);
-            if sum < 2 write(x, y, false);
-            else if sum > 3 write(x, y, false);
-            else if sum == 3 write(x, y, true);
-            else write(x, y, read(x, y));
-        }
-
-        for 0..count - 1 {
-            if buffer_b[it] > 0 vga_screen[it * 2 + 1] = 0x0f;
-            else                vga_screen[it * 2 + 1] = 0xf0;
-        }
-
-        temp := buffer_a;
-        buffer_a = buffer_b;
-        buffer_b = temp;
-        wait(600);
-    }
-}
-
-
-
 /* Memory map:
 
 4Mb is identity mapped.
@@ -495,8 +374,8 @@ gol :: () {
 */
 
 VIDEO_MEMORY_BASE :: IDENTITY_MAP_SIZE;
-VIDEO_MEMORY_SIZE :: 0x400_000;
-IDENTITY_MAP_SIZE :: 0x800_000;
+VIDEO_MEMORY_SIZE :: 0x800_000;
+IDENTITY_MAP_SIZE :: 0x400_000;
 PAGE_TABLE_RANGE :: 0x200_000;
 
 PAGE_TABLE_COUNT :: (VIDEO_MEMORY_SIZE + IDENTITY_MAP_SIZE) / PAGE_TABLE_RANGE;
@@ -519,8 +398,8 @@ Page_Flags :: enum_flags u64 {
     EXECUTE_DISABLE :: 1 << 63;
 }
 
-VIRTUAL_OFFSET :: 0xffff_ff80_0000_0000;
-offset_pdpt: [0x200] u64 #align 0x1000;
+VIRTUAL_MIRROR :: 0xffff_ff80_0000_0000;
+mirror_pdpt: [0x200] u64 #align 0x1000;
 
 ONE_GB :: 0x4000_0000;
 
@@ -529,10 +408,10 @@ page_table_init :: () {
 
     assert(check_feature(cpu.feature_leaves, .PDPE1GB), "For the present, this OS requires 1GB pages to be supported");
 
-    pml4[0x1ff] = cast(u64) (xx offset_pdpt.data) | PRESENT | READ_WRITE;
+    pml4[0x1ff] = cast(u64) (xx mirror_pdpt.data) | PRESENT | READ_WRITE;
     for 0..0x200-1 {
         address := it * ONE_GB;
-        offset_pdpt[it] = cast(u64) (xx address)  | PRESENT | READ_WRITE | PAGE_SIZE;
+        mirror_pdpt[it] = cast(u64) (xx address)  | PRESENT | READ_WRITE | PAGE_SIZE;
     }
 
     pml4[0]     = cast(u64) (xx pdpt.data)        | PRESENT | READ_WRITE;
@@ -561,39 +440,50 @@ page_table_init :: () {
 
         set_cr3 pml4_base;
     }
-
-    #if ENABLE_VESA {
-        page_tables_for_video_memory :: VIDEO_MEMORY_SIZE / PAGE_TABLE_RANGE;
-        for 0..page_tables_for_video_memory - 1 {
-            index := it + page_tables_in_identity_map;
-    
-            table: [] u64;
-            table.data = page_tables[index].data;
-            table.count = 0x200;
-    
-            page_dir[index] = cast(u64) (xx table.data) | PRESENT | READ_WRITE;
-            for page: 0..0x200 - 1 {
-                address := page * 0x1000 + it * PAGE_TABLE_RANGE + boot_data.vesa_framebuffer;
-                table[page] = cast(u64) (xx address)    | PRESENT | READ_WRITE;
-            }
-        }
-    }
 }
 
-get_or_create_page_table_entry :: (table: *u64, entry: u64) -> *u64 {
+get_or_create_page_table :: (table: *u64, entry: u64) -> *u64 {
     using Page_Flags;
 
     if table[entry] & xx PRESENT {
         phys := table[entry] & (~0xfff);
-        return xx (phys + VIRTUAL_OFFSET);
+        return xx (phys + VIRTUAL_MIRROR);
     }
 
     phys := get_new_page_frame();
-    table[entry] = phys | cast(u64) (PRESENT | READ_WRITE);
-    return cast(*u64) (phys + VIRTUAL_OFFSET);
+    table[entry] = phys | xx PRESENT | READ_WRITE;
+    return cast(*u64) (phys + VIRTUAL_MIRROR);
 }
 
-map_page :: (virtual_address: u64, physical_address: u64, loc := #caller_location) -> bool {
+map_region :: (size_bytes: int, virtual_address: u64 = xx,no_check -1, physical_address: u64 = xx,no_check -1, loc := #caller_location) -> *void {
+    page_count := (size_bytes + 0x800) / 0x1000;
+
+    target := physical_address;
+    if target == xx,no_check -1 {
+        target = get_new_page_frame(page_count);
+        print("Getting new page frame");
+    }
+
+    source := virtual_address;
+    if source == xx,no_check -1 {
+        source = get_new_virtual_page(page_count);
+        print("Getting new virtual page");
+    }
+
+    assert(address_is_page(target), "Not a page", loc);
+    assert(address_is_page(source), "Not a page", loc);
+
+    debug("`source;");
+    debug("`target;");
+    for 0..page_count-1 {
+        offset := cast(u64) it * 4096;
+        map_page(source + offset, target + offset, loc);
+    }
+
+    return xx source;
+}
+
+map_page :: (virtual_address: u64, physical_address: u64, loc := #caller_location) {
     using Page_Flags;
 
     mask: u64 = 0b111111111;
@@ -602,18 +492,12 @@ map_page :: (virtual_address: u64, physical_address: u64, loc := #caller_locatio
     pd\ _offset := (virtual_address >> 21) & mask;
     pt\ _offset := (virtual_address >> 12) & mask;
 
-    pdpt := get_or_create_page_table_entry(pml4.data, pml4_offset);
-    pd   := get_or_create_page_table_entry(pdpt,      pdpt_offset);
-    pt   := get_or_create_page_table_entry(pd,        pd_offset);
-    assert(!(pt[pt_offset] & xx PRESENT), "Attempting to map a page that is already mapped", loc);
+    pdpt := get_or_create_page_table(pml4.data, pml4_offset);
+    pd   := get_or_create_page_table(pdpt,      pdpt_offset);
+    pt   := get_or_create_page_table(pd,        pd_offset);
+    assert(!(pt[pt_offset] & xx PRESENT), "Attempting to map a virtual page that is already present", loc);
 
     pt[pt_offset] = physical_address | cast(u64) (PRESENT | READ_WRITE);
-
-    // #asm {
-    //     get_cr3 cr3:;
-    //     set_cr3 cr3;
-    // }
-    return true;
 }
 
 PAGE_FRAME_BASE :: 0xd00_000;
@@ -622,26 +506,24 @@ page_frame_watermark: int;
 get_new_page_frame :: (count: int = 1) -> u64 {
     address := page_frame_watermark * 0x1000 + PAGE_FRAME_BASE;
     page_frame_watermark += count;
-    memset(xx (address + VIRTUAL_OFFSET), 0, 0x1000);
+    memset(xx (address + VIRTUAL_MIRROR), 0, 0x1000);
     return xx address;
 }
 
-/*
-virtual_watermark: int;
-map_physical_region :: (physical_base: u64, limit: u64) -> *void {
-    VIRTUAL_WATERMARK_BASE :: VIDEO_MEMORY_BASE + VIDEO_MEMORY_SIZE;
-    address := virtual_watermark * 0x1000 + VIRTUAL_WATERMARK_BASE;
-
-    assert(limit % 0x1000 == 0);
-    pages_required := limit / 0x1000;
-
-    for 0..pages_required - 1 {
-
-        address += 0x1000;
-    }
-
+address_is_page :: (address: u64) -> bool {
+    if (address >> 48 != 0xffff) && (address >> 48 != 0x0) return false;
+    return address % 0x1000 == 0;
 }
-*/
+
+VIRTUAL_PAGE_BASE :: 0xd00_000;
+virtual_page_watermark: int;
+
+get_new_virtual_page :: (count: int = 1) -> u64 {
+    address := virtual_page_watermark * 0x1000 + VIRTUAL_PAGE_BASE;
+    virtual_page_watermark += count;
+    memset(xx (address + VIRTUAL_MIRROR), 0, 0x1000);
+    return xx address;
+}
 
 get_physical_address :: (virtual_address: *void) -> u64, present: bool {
     using Page_Flags;
@@ -658,7 +540,7 @@ get_physical_address :: (virtual_address: *void) -> u64, present: bool {
     ReadTableEntry :: (index: u64, table_address: u64) -> entry: u64 #expand {
         if !((xx table_address) & PRESENT) `return 0, false; //`
 
-        table := cast(*u64) (table_address & (~0xfff) + VIRTUAL_OFFSET);
+        table := cast(*u64) (table_address & (~0xfff) + VIRTUAL_MIRROR);
         return table[index];
     }
 
