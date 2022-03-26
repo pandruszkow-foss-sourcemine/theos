@@ -3,4 +3,4 @@ ata0-master: type=disk, path="theos", mode=flat, cylinders=0, heads=0, spt=0, mo
 boot: c
 vga: update_freq=60
 plugin_ctrl: unmapped=0, es1370=1
-cpuid: 1g_pages=1
+cpuid: 1g_pages=1, misaligned_sse=1

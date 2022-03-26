@@ -20,13 +20,26 @@
 
 ISR_DECLARATION :: #string ISR
 isr_slot_0x% :: () #c_call {
-    c: Context;
-    push_context c {
-        print("\n       AN EXCEPTION HAS OCCURED:  ");
-        print("%\n", theme.accent);
+
+    #asm {
+        rsp: gpr === sp;
+        sub rsp, 0x200;
+        cli;
     }
 
-    while true {}
+    c: Context;
+    push_context c {
+        clear_screen();
+
+        print("\n\n       AN EXCEPTION HAS OCCURED:  ");
+        print("%\n\n", theme.accent);
+    }
+
+    #asm {
+        add rsp, 0x200;
+    }
+
+    while true #asm { hlt; }
 }
 ISR;
 
@@ -44,13 +57,19 @@ interrupts: [] struct { message: string; slot: int; } = .[
     .{ "Segment not present",              0x0b },
     .{ "Stack segment fault",              0x0c },
     .{ "General protection fault",         0x0d },
-    .{ "Page fault",                       0x0e },
+//  .{ "Page fault",                       0x0e },
     .{ "Floating point exception",         0x10 },
     .{ "Alignment check fault",            0x11 },
     .{ "Machine check fault",              0x12 },
     .{ "SIMD Float exception fault",       0x13 },
     .{ "Virtualization exception fault",   0x14 },
     .{ "Security exception fault",         0x1e },
+];
+
+REGISTERS_TO_PUSH :: string.[
+    "a",  "b",  "c",   "d",
+    "si", "di",
+    "8",  "9",  "10",  "11", "12", "13", "14", "15"
 ];
 
 #run {
@@ -121,6 +140,27 @@ interrupts: [] struct { message: string; slot: int; } = .[
             add_build_string(builder_to_string(*isr_code), w);
         }
 
+        // {
+        //     register_pinnings: String_Builder;
+        //     for REGISTERS_TO_PUSH {
+        //         append(*register_pinnings, tprint("            r%: gpr === %1;\n", it));
+        //         append(*register_pinnings, tprint("            push rsp, r%;\n", it));
+        //     }
+        //     
+        //     push_all_macro := tprint(PUSH_ALL_MACRO, builder_to_string(*register_pinnings));
+        //     add_build_string(push_all_macro, w);
+        //     
+        //     reset(*register_pinnings);
+        //     for REGISTERS_TO_PUSH {
+        //         append(*register_pinnings, tprint("            r%: gpr === %1;\n", it));
+        //         append(*register_pinnings, tprint("            pop rsp, r%;\n", it));
+        //     }
+        //     
+        //     pop_all_macro := tprint(POP_ALL_MACRO, builder_to_string(*register_pinnings));
+        //     add_build_string(pop_all_macro, w);
+        //     
+        // }
+
         add_build_string(tprint("MAILBAG_SIZE     :: %;", zip.count), w);
         add_build_string(tprint("BOOT_DATA_AREA   :: %;", BOOT_DATA_AREA), w);
         add_build_string(tprint("COMPILER_VERSION :: \"%\";", compiler_get_version_info(null)), w);
@@ -168,8 +208,9 @@ interrupts: [] struct { message: string; slot: int; } = .[
             }
 
             patches := Patch.[
-                .{"crt_memset", "memset", 0, 0},
-                .{"crt_memcpy", "memcpy", 0, 0},
+                .{source = "crt_memset", target = "memset"},
+                .{source = "crt_memcpy", target = "memcpy"},
+                .{source = "crt_memcmp", target = "memcmp"},
             ];
 
             for 0..elf_header.e_shnum - 1 {

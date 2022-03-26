@@ -1,4 +1,159 @@
 
+USE_VGA :: !ENABLE_VESA;
+
+Vesa :: struct {
+    framebuffer: *u32;
+    buffer_size: int;
+    pixels: int;
+
+    char_width:  int;
+    char_height: int;
+
+    text_buffer: *u8;
+    font: Pnm;
+}
+
+vesa_init :: (vesa: *Vesa, boot_data: Boot_Data, font: Pnm) {
+    // #if !ENABLE_VESA return;
+
+    assert(font.type == .GRAYMAP);
+
+    vesa.buffer_size = VESA_WIDTH * VESA_HEIGHT * VESA_DEPTH / 8;
+    vesa.pixels = VESA_WIDTH * VESA_HEIGHT;
+    vesa.framebuffer = xx map_memory(vesa.buffer_size, physical_address = boot_data.vesa_framebuffer);
+
+    char_count := 95;
+    assert(font.width % 95 == 0);
+
+    vesa.char_width  = font.width / char_count;
+    vesa.char_height = font.height;
+
+    vesa.text_buffer = map_memory(0x1000);
+    vesa.font = font;
+}
+
+vesa_set_pixel :: inline (vesa: *Vesa, x: int, y: int, color: u32) {
+    vesa.framebuffer[x + y * VESA_WIDTH] = color;
+}
+
+vesa_draw_frame :: (vesa: *Vesa) {
+    // #if !ENABLE_VESA return;
+
+    if simd_enabled {
+        c: u64 = 0x0060303800603038;
+        #asm SSE {
+            movq color:, c;
+            punpckldq color, color;
+        }
+
+        assert(vesa.buffer_size % 4 == 0);
+        for 0..vesa.pixels / 4 - 1 {
+            target := *vesa.framebuffer[it * 4] #align 16;
+            #asm SSE {
+                movdqa [target], color;
+            }
+        }
+    } else {
+        for 0..vesa.pixels / 2 - 1 {
+            << (cast(*u64) vesa.framebuffer + it) = 0x0060303800603038;
+        }
+    }
+
+    bg: u32 = 0x00603038;
+    for 0..0x100 - 1 {
+        if vesa.text_buffer[it] == 0 continue;
+        start := vesa.char_width * (vesa.text_buffer[it] - 0x20);
+
+        for y: 0..vesa.char_height-1 for x: 0..vesa.char_width-1 {
+            print_hex(start + x + y * 95 * vesa.char_width); print("\n");
+            print_hex(cast(u64) vesa.font.data);
+            brightness2 := cast(u32) vesa.font.data[0];
+            while true {}
+            brightness := cast(u32) vesa.font.data[start + x + y * 95 * vesa.char_width];
+            t := cast(float) brightness / 255;
+
+            r := cast(u32) (cast(float) 0x60 * (1 - t) + cast(float) 0xff * t);
+            g := cast(u32) (cast(float) 0x30 * (1 - t) + cast(float) 0xff * t);
+            b := cast(u32) (cast(float) 0x38 * (1 - t) + cast(float) 0xff * t);
+
+            blended: u32 = b | (g << 8) | (r << 16);
+            vesa.framebuffer[(it / 80) * vesa.char_height * VESA_HEIGHT + it * vesa.char_width + x + y * VESA_WIDTH] = blended;
+        }
+    }
+}
+
+
+
+Pnm :: struct {
+    width: int;
+    height: int;
+
+    type: enum {
+        UNINITIALIZED :: 0;
+        BITMAP;
+        GRAYMAP;
+        PIXMAP;
+    }
+
+    data: *u8;
+}
+
+parse_pnm :: (buffer: *u8) -> Pnm {
+    assert(buffer[0] == #char "P");
+
+    pnm: Pnm;
+    pnm.type = xx (buffer[1] - #char "0" - 3);
+    assert(pnm.type == .GRAYMAP);
+
+    is_whitespace :: (char: u8) -> bool {
+        return char == 0x20
+            || char == 0x09
+            || char == 0x0a
+            || char == 0x0b
+            || char == 0x0c
+            || char == 0x0d
+            || char == #char "#";
+    }
+
+    ConsumeWhitespaceAndComments :: () #expand {
+        while is_whitespace(buffer[`cursor]) {
+            if buffer[`cursor] == #char "#" {
+                while buffer[`cursor] != 0xa `cursor += 1;
+            }
+            cursor += 1;
+        }
+    }
+
+    ParseInt :: () -> int #expand {
+        digit := buffer[`cursor]; //`
+        result: int;
+
+        while !is_whitespace(digit) {
+            assert(digit >= #char "0" && digit <= #char "9");
+            result *= 10;
+            result += digit - #char "0";
+            `cursor += 1;
+            digit = buffer[`cursor];
+        }
+        return result;
+    }
+
+    cursor := 2;
+    ConsumeWhitespaceAndComments();
+    pnm.width = ParseInt();
+    ConsumeWhitespaceAndComments();
+    pnm.height = ParseInt();
+
+    ConsumeWhitespaceAndComments();
+    max_gray_value := ParseInt();
+    assert(max_gray_value < 256);
+
+    ConsumeWhitespaceAndComments();
+    pnm.data = buffer + cursor;
+    return pnm;
+}
+
+
 
 TITLE :: #string END
         /##     /##                                                  
@@ -208,11 +363,11 @@ clear_screen :: () {
             vga_screen[it * 2]     = 0;
             vga_screen[it * 2 + 1] = get_attribute();
         }
-        text_cursor = 0;
+        text_cursor = indent;
     } else {
-        for 0..vesa.buffer_size / 2 - 1 {
-            << (cast(*u64) vesa.framebuffer + it) = 0x0060303800603038;
-        }
+        // for 0..vesa.buffer_size / 2 - 1 {
+        //     << (cast(*u64) vesa.framebuffer + it) = 0x0060303800603038;
+        // }
     }
 }
 
@@ -292,29 +447,4 @@ Vga_Color :: enum u8 {
     LIGHT_MAGENTA :: 0x0d;
     YELLOW        :: 0x0e;
     BRIGHT_WHITE  :: 0x0f;
-}
-
-
-
-
-
-
-
-
-
-
-
-USE_VGA :: !ENABLE_VESA;
-
-Vesa :: struct {
-    framebuffer: *u32;
-    buffer_size: int;
-}
-
-vesa: Vesa;
-
-init_vesa :: (boot_data: Boot_Data) {
-    #if !ENABLE_VESA return;
-    vesa.buffer_size = VESA_WIDTH * VESA_HEIGHT * VESA_DEPTH / 8;
-    vesa.framebuffer = xx map_region(vesa.buffer_size, physical_address = boot_data.vesa_framebuffer);
 }

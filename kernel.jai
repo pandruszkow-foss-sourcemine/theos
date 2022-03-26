@@ -2,7 +2,7 @@
 #import "Machine_X64";
 #load "elf/elf.jai";
 #load "pci.jai";
-#load "vga.jai";
+#load "graphics.jai";
 #load "config.jai";
 
 cpu: Cpu_X86;
@@ -12,24 +12,53 @@ Boot_Data :: struct {
 }
 boot_data: Boot_Data;
 
+simd_enabled: bool;
+
 #program_export
 kernel_entry :: () {
     boot_data = << cast(*type_of(boot_data)) BOOT_DATA_AREA;
+    #if USE_VGA boot_data.vesa_framebuffer = 0x500_000;
 
     idt_init();
-    // pic_init();
-    //cmos_init();
+    pic_init();
+    cmos_init();
 
     cpu = get_cpu_info();
     page_table_init();
-    enable_simd(cpu);
-    // v := map_region(1920 * 1080 * 4, physical_address = boot_data.vesa_framebuffer);
-    // for 0..1000000 {
-    //         <<  (cast(*u64) v + it) = 0xffffffffffffffff;
-    // }
-    init_vesa(boot_data);
+    simd_enabled = enable_simd(cpu);
+    simd_enabled = false;
+
     clear_screen();
-    // print("Done.");
+
+    buffer := map_memory(MAILBAG_SIZE);
+    ata_pio_read(xx buffer, (MAILBAG_LOCATION) / 0x200, (MAILBAG_SIZE + 0x200) / 0x200);
+    read_zip_file(buffer);
+
+    font: Pnm;
+    for 0..file_count - 1 {
+        file := files[it];
+
+        if file.name == "font.pgm" {
+            font = parse_pnm(file.data);
+            // break;
+        }
+
+        {
+            // text: string;
+            // text.data = file.data;
+            // text.count = file.size;
+            // print(text);
+            // print("\n");
+        }
+    }
+
+    vesa: Vesa;
+    vesa_init(*vesa, boot_data, font);
+
+    text := "Testing 123";
+    crt_memcpy(vesa.text_buffer, text.data, xx text.count);
+    vesa_draw_frame(*vesa);
+
     while true {};
 }
 
@@ -45,6 +74,15 @@ crt_memcpy :: (dest: *u8, src: *u8, count: u64) -> *void #c_call {
         dest[it] = src[it];
     }
     return dest;
+}
+
+crt_memcmp :: (a: *u8, b: *u8, count: u64) -> s32 #c_call {
+    for 0..count-1 {
+        if a[it] != b[it] {
+            return a[it] - b[it];
+        }
+    }
+    return 0;
 }
 
 assert :: (condition: bool, message: string = "", call_site := #caller_location) {
@@ -163,7 +201,7 @@ enable_simd :: (cpu: Cpu_X86) -> bool {
 
 
 
-Isr_Stack_Frame :: struct {
+Interrupt_Stack_Frame :: struct {
     ip:    u64;
     cs:    u64;
     flags: u64;
@@ -211,6 +249,7 @@ idt_init :: () {
     idt_desc.base = *idt;
 
     register_generated_isrs();
+    idt_add_handler(xx page_fault_handler, 0xe);
 
     address := *idt_desc;
     #asm {
@@ -455,26 +494,22 @@ get_or_create_page_table :: (table: *u64, entry: u64) -> *u64 {
     return cast(*u64) (phys + VIRTUAL_MIRROR);
 }
 
-map_region :: (size_bytes: int, virtual_address: u64 = xx,no_check -1, physical_address: u64 = xx,no_check -1, loc := #caller_location) -> *void {
+map_memory :: (size_bytes: int, virtual_address: u64 = xx,no_check -1, physical_address: u64 = xx,no_check -1, loc := #caller_location) -> *void {
     page_count := (size_bytes + 0x800) / 0x1000;
 
     target := physical_address;
     if target == xx,no_check -1 {
         target = get_new_page_frame(page_count);
-        print("Getting new page frame");
     }
 
     source := virtual_address;
     if source == xx,no_check -1 {
         source = get_new_virtual_page(page_count);
-        print("Getting new virtual page");
     }
 
     assert(address_is_page(target), "Not a page", loc);
     assert(address_is_page(source), "Not a page", loc);
 
-    debug("`source;");
-    debug("`target;");
     for 0..page_count-1 {
         offset := cast(u64) it * 4096;
         map_page(source + offset, target + offset, loc);
@@ -557,6 +592,56 @@ get_physical_address :: (virtual_address: *void) -> u64, present: bool {
     return (pte & ~0xfff) + page_offset, true;
 }
 
+page_fault_handler :: () #no_call {
+    // PushAll();
+
+    #asm {
+        rsp: gpr === sp;
+        sub rsp, 0x200;
+    }
+
+    error_code: *u64;
+    stack_data: *Interrupt_Stack_Frame;
+
+    #asm {
+        mov stack:, rsp;
+        add stack, 0x200;
+        mov error_code, stack;
+        add stack, 0x8;
+        mov stack_data, stack;
+    }
+
+    push_context Context.{} {
+        print("\n\n An exception has occured:  ");
+        print("Page fault\n", theme.accent);
+
+        cr2: u64;
+        #asm {
+            get_cr2 cr2;
+        }
+        print(" CR2 contains       "); print_hex(cr2); print(".\n");
+        print(" The error code is  "); print_hex(cast(u8) << error_code); print(".\n\n");
+
+        phys, present := get_physical_address(xx cr2);
+        if present print(" The page is present.\n");
+        else print(" The page is not present.\n");
+
+        print("\n Interrupt frame:\n");
+        print(" RIP:   "); print_hex(stack_data.ip);    print("\n");
+        print(" CS:    "); print_hex(stack_data.cs);    print("\n");
+        print(" FLAGS: "); print_hex(stack_data.flags); print("\n");
+        print(" SP:    "); print_hex(stack_data.sp);    print("\n");
+        print(" SS:    "); print_hex(stack_data.ss);    print("\n");
+    }
+
+    #asm {
+        add rsp, 0x200;
+    }
+
+    // PopAll();
+    while true {}
+}
+
 
 
 Ata_Status :: enum_flags u8 {
@@ -601,9 +686,19 @@ Ata_Command :: enum u8 {
 }
 
 ata_await_transfer_request :: () {
+    using Ata_Status;
+
+    wait();
+
     while true {
-        status: Ata_Status = xx port_read(xx Ata_Port.IN_STATUS);
-        if status & Ata_Status.TRANSFER_REQUESTED  break;
+        status := cast(Ata_Status) port_read(xx Ata_Port.IN_STATUS);
+
+        trq := status & TRANSFER_REQUESTED;
+        bsy := status & BUSY;
+
+        if trq && !bsy {
+            break;
+        }
     }
 }
 
@@ -629,11 +724,11 @@ ata_pio_read :: (buffer: *u16, start_sector: u32, sector_count: u8) -> Ata_Error
     ata_pio_start(start_sector, sector_count);
     port_write(xx COMMAND, xx Ata_Command.READ);
 
-    for 0..sector_count - 1 {
+    for sector: 0..sector_count - 1 {
         ata_await_transfer_request();
 
         for 0..0x100 - 1 {
-            buffer[it] = in(xx DATA, u16);
+            buffer[it + 0x100 * sector] = in(xx DATA, u16);
         }
     }
     return ata_get_error();
@@ -645,11 +740,11 @@ ata_pio_write :: (buffer: *u16, start_sector: u32, sector_count: u8) -> Ata_Erro
     ata_pio_start(start_sector, sector_count);
     port_write(xx COMMAND, xx Ata_Command.WRITE);
 
-    for 0..sector_count - 1 {
+    for sector: 0..sector_count - 1 {
         ata_await_transfer_request();
 
         for 0..0x100 - 1 {
-            out(xx DATA, buffer[it]);
+            out(xx DATA, buffer[it + 0x100 * sector]);
         }
     }
     return ata_get_error();
@@ -700,7 +795,7 @@ ZIP_EOCD_SIGNATURE :: 0x06054b50;
 ZIP_CD\ _SIGNATURE :: 0x02014b50;
 ZIP_LOCAL_HEADER_SIZE :: 0x1e;
 
-read_zip_files :: (buffer: *void) {
+read_zip_file :: (buffer: *void) {
     cursor: int;
     for 0..MAILBAG_SIZE - 1 {
         cursor = MAILBAG_SIZE + xx buffer - it;
@@ -708,14 +803,14 @@ read_zip_files :: (buffer: *void) {
             break;
         }
     }
+    assert(cursor > xx buffer + 1, "No zip header found.");
 
     cursor += 10;
     entry_count := << cast(*u16) cursor;
 
     cursor += 6;
     directory_location := << cast(*u32) cursor;
-    print_hex(directory_location);
-    while true {}
+
     cursor = directory_location + xx buffer;
     for 0..entry_count - 1 {
         header := << cast(*Zip_Entry) cursor;
@@ -728,13 +823,14 @@ read_zip_files :: (buffer: *void) {
         file.size = header.compressed_len;
         file.data = xx (xx buffer + header.chunk_offset + ZIP_LOCAL_HEADER_SIZE + header.name_len);
 
-        if file.name.count > 4 {
-            extension: string;
-            extension.count = 4;
-            extension.data = *file.name[file.name.count - 5];
-            if extension == ".txt" file.type = .TEXT;
-            else if extension == ".pgm" file.type = .PICTURE;
-        }
+        // if file.name.count > 4 {
+        //     extension: string;
+        //     extension.count = 4;
+        //     extension.data = *file.name[file.name.count - 5];
+        //     if extension == ".txt" file.type = .TEXT;
+        //     else if extension == ".pgm" file.type = .PICTURE;
+        // }
+        // while true {}
 
         files[file_count] = file;
         file_count += 1;
