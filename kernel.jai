@@ -16,6 +16,7 @@ simd_enabled: bool;
 
 #program_export
 kernel_entry :: () {
+    // while true {}
     boot_data = << cast(*type_of(boot_data)) BOOT_DATA_AREA;
     #if USE_VGA boot_data.vesa_framebuffer = 0x500_000;
 
@@ -28,8 +29,6 @@ kernel_entry :: () {
     simd_enabled = enable_simd(cpu);
     simd_enabled = false;
 
-    clear_screen();
-
     buffer := map_memory(MAILBAG_SIZE);
     ata_pio_read(xx buffer, (MAILBAG_LOCATION) / 0x200, (MAILBAG_SIZE + 0x200) / 0x200);
     read_zip_file(buffer);
@@ -40,24 +39,22 @@ kernel_entry :: () {
 
         if file.name == "font.pgm" {
             font = parse_pnm(file.data);
-            // break;
-        }
-
-        {
-            // text: string;
-            // text.data = file.data;
-            // text.count = file.size;
-            // print(text);
-            // print("\n");
+            break;
         }
     }
 
-    vesa: Vesa;
-    vesa_init(*vesa, boot_data, font);
+    random_seed = xx rdtsc();
 
-    text := "Testing 123";
-    crt_memcpy(vesa.text_buffer, text.data, xx text.count);
-    vesa_draw_frame(*vesa);
+    pci_scan_all_devices();
+    vesa_init(boot_data, font);
+
+    welcome_screen();
+    print("\n");
+    pci_print_device_list();
+    print("\n\n");
+    // print(message); print("\n");
+    assert(false, "This is a fun assertion message!");
+    vesa_draw_frame();
 
     while true {};
 }
@@ -87,14 +84,15 @@ crt_memcmp :: (a: *u8, b: *u8, count: u64) -> s32 #c_call {
 
 assert :: (condition: bool, message: string = "", call_site := #caller_location) {
     if !condition {
-        print("Assertion failure!\n -> ");
-        print(call_site.fully_pathed_filename);
+        print("\nAssertion failure!\n  -> ");
+        print(call_site.fully_pathed_filename, theme.accent);
         print(":");
-        print(call_site.line_number);
-        print("\n");
+        print(call_site.line_number, theme.accent);
+        print("\n     ");
         print(message);
         print("\n");
 
+        #if ENABLE_VESA vesa_draw_frame();
         while true {
             #asm { hlt; }
         }
@@ -556,7 +554,6 @@ virtual_page_watermark: int;
 get_new_virtual_page :: (count: int = 1) -> u64 {
     address := virtual_page_watermark * 0x1000 + VIRTUAL_PAGE_BASE;
     virtual_page_watermark += count;
-    memset(xx (address + VIRTUAL_MIRROR), 0, 0x1000);
     return xx address;
 }
 
@@ -598,6 +595,7 @@ page_fault_handler :: () #no_call {
     #asm {
         rsp: gpr === sp;
         sub rsp, 0x200;
+        cli;
     }
 
     error_code: *u64;
@@ -611,35 +609,42 @@ page_fault_handler :: () #no_call {
         mov stack_data, stack;
     }
 
+    vesa.cursor = 0;
+    vesa.attribute_count = 0;
     push_context Context.{} {
-        print("\n\n An exception has occured:  ");
-        print("Page fault\n", theme.accent);
+        print("\n\nAn exception has occured:  ");
+        print("Page fault\n\n", theme.accent);
 
         cr2: u64;
         #asm {
             get_cr2 cr2;
         }
-        print(" CR2 contains       "); print_hex(cr2); print(".\n");
-        print(" The error code is  "); print_hex(cast(u8) << error_code); print(".\n\n");
+        print("CR2 contains       "); print_hex(cr2); print(".\n\n");
 
         phys, present := get_physical_address(xx cr2);
-        if present print(" The page is present.\n");
-        else print(" The page is not present.\n");
+        if present {
+            print("The page is present.\nIt is mapped to    "); print_hex(phys); print(".\n\n");
+        } else {
+            print("The page is not present.\n\n");
+        }
 
-        print("\n Interrupt frame:\n");
-        print(" RIP:   "); print_hex(stack_data.ip);    print("\n");
-        print(" CS:    "); print_hex(stack_data.cs);    print("\n");
-        print(" FLAGS: "); print_hex(stack_data.flags); print("\n");
-        print(" SP:    "); print_hex(stack_data.sp);    print("\n");
-        print(" SS:    "); print_hex(stack_data.ss);    print("\n");
+        print("The error code is  "); print_hex(cast(u8) << error_code); print(".\n");
+        print("\nInterrupt frame:\n");
+        print("RIP:    "); print_hex(stack_data.ip);    print("\n");
+        print("CS:     "); print_hex(stack_data.cs);    print("\n");
+        print("FLAGS:  "); print_hex(stack_data.flags); print("\n");
+        print("SP:     "); print_hex(stack_data.sp);    print("\n");
+        print("SS:     "); print_hex(stack_data.ss);    print("\n");
+        vesa_draw_frame();
     }
 
     #asm {
         add rsp, 0x200;
+        sti;
     }
 
     // PopAll();
-    while true {}
+    while true #asm { hlt; }
 }
 
 

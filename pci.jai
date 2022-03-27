@@ -201,24 +201,30 @@ pci_print_device_list :: () {
     if !pci_devices_scanned pci_scan_all_devices();
 
     ti := type_info(Pci_Class_Code);
+    print("\nScanning PCI devices...\n");
+
+    print("----------------------------------------\n", theme.foreground);
+    print("|      Class      | Subclass | Address |\n");
+    print("----------------------------------------\n", theme.foreground);
     for 0..pci_device_count - 1 {
         device_info := pci_device_info[it];
 
-        print("    PCI device, class ");
+        print("| ");
         name := ti.names[device_info.header.class_code - 1];
         print(name);
         for 0..15 - name.count print(" ");
-        print("subclass ");
+        print("|     ");
         print_hex(device_info.header.subclass);
 
-        print(" | Address ");
+        print(" |   ");
         print(device_info.bus);
         print(":");
         print(device_info.index);
         print(":");
         print(device_info.function);
-        print("\n");
+        print(" |\n");
     }
+    print("----------------------------------------\n", theme.foreground);
 }
 
 
@@ -239,16 +245,12 @@ hda_detect :: () {
             print("\nHeader type: "); print_hex(info.header.header_type);
             print("\n\nConfig registers:\n");
 
-            margin += 2; text_cursor += 2;
             for 0..0xf {
                 print_hex(cast(u8) it); print(": ");
                 bar := pci_read_config_register(info, cast(u32) it);
                 print_hex(bar);
                 print("\n");
             }
-            margin -= 2;
-
-            vertical_divide();
 
             base, limit, io_space := pci_get_base_address(info, 0);
             print("\nBase:\n  ");
@@ -260,8 +262,6 @@ hda_detect :: () {
             else print("false");
 
             print("\n");
-
-            vertical_divide();
         }
     }
 }

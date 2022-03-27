@@ -19,7 +19,7 @@
 
 
 ISR_DECLARATION :: #string ISR
-isr_slot_0x% :: () #c_call {
+isr_slot_0x% :: () #no_call {
 
     #asm {
         rsp: gpr === sp;
@@ -33,10 +33,12 @@ isr_slot_0x% :: () #c_call {
 
         print("\n\n       AN EXCEPTION HAS OCCURED:  ");
         print("%\n\n", theme.accent);
+        #if ENABLE_VESA vesa_draw_frame();
     }
 
     #asm {
         add rsp, 0x200;
+        sti;
     }
 
     while true #asm { hlt; }

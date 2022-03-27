@@ -9,3 +9,4 @@ program
 *.vdi
 *.img
 *.iso
+*.elf

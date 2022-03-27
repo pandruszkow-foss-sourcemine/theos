@@ -53,6 +53,10 @@ start:
     mov bx, .greeting
     call write_string
 
+    ; === Enable A20 (probably) ===
+    mov ax, 0x2401
+    int 0x15
+
 %if ENABLE_VESA
     ; === Get VESA info ===
     mov di, vbe_info_block
@@ -290,6 +294,7 @@ load_kernel:
     jnz .loop
 
     ret
+
 
 %if ENABLE_VESA
 vbe_info_block:
