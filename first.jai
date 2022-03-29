@@ -16,8 +16,6 @@
     }
 }
 
-
-
 ISR_DECLARATION :: #string ISR
 isr_slot_0x% :: () #no_call {
 
@@ -27,12 +25,31 @@ isr_slot_0x% :: () #no_call {
         cli;
     }
 
+    error_code: *u64;
+    stack_data: *Interrupt_Stack_Frame;
+
+    #asm {
+        mov stack:, rsp;
+        add stack, 0x200;
+        mov error_code, stack;
+        add stack, 0x8;
+        mov stack_data, stack;
+    }
+
     c: Context;
     push_context c {
         clear_screen();
 
-        print("\n\n       AN EXCEPTION HAS OCCURED:  ");
-        print("%\n\n", theme.accent);
+        print("\n\n   AN EXCEPTION HAS OCCURRED:  ", theme.primary);
+        print("%\n", theme.accent);
+
+        print("\n   Interrupt frame:\n");
+        print("   RIP:    "); print_hex(stack_data.ip, theme.primary);    print("\n");
+        print("   CS:     "); print_hex(stack_data.cs, theme.primary);    print("\n");
+        print("   FLAGS:  "); print_hex(stack_data.flags, theme.primary); print("\n");
+        print("   SP:     "); print_hex(stack_data.sp, theme.primary);    print("\n");
+        print("   SS:     "); print_hex(stack_data.ss, theme.primary);    print("\n");
+        print("\n   Error code: "); print_hex(cast(u8) error_code, theme.primary);    print("\n");
         #if ENABLE_VESA vesa_draw_frame();
     }
 
@@ -66,12 +83,6 @@ interrupts: [] struct { message: string; slot: int; } = .[
     .{ "SIMD Float exception fault",       0x13 },
     .{ "Virtualization exception fault",   0x14 },
     .{ "Security exception fault",         0x1e },
-];
-
-REGISTERS_TO_PUSH :: string.[
-    "a",  "b",  "c",   "d",
-    "si", "di",
-    "8",  "9",  "10",  "11", "12", "13", "14", "15"
 ];
 
 #run {
@@ -118,6 +129,7 @@ REGISTERS_TO_PUSH :: string.[
         options.cast\_bounds_check = .OFF;
         options.math\_bounds_check = .OFF;
         options.null_pointer_check = .OFF;
+        options.dead_code_elimination = .MODULES_ONLY;
 
         options.additional_linker_arguments = .["-T", "link.ld"];
 
@@ -142,26 +154,32 @@ REGISTERS_TO_PUSH :: string.[
             add_build_string(builder_to_string(*isr_code), w);
         }
 
-        // {
-        //     register_pinnings: String_Builder;
-        //     for REGISTERS_TO_PUSH {
-        //         append(*register_pinnings, tprint("            r%: gpr === %1;\n", it));
-        //         append(*register_pinnings, tprint("            push rsp, r%;\n", it));
-        //     }
-        //     
-        //     push_all_macro := tprint(PUSH_ALL_MACRO, builder_to_string(*register_pinnings));
-        //     add_build_string(push_all_macro, w);
-        //     
-        //     reset(*register_pinnings);
-        //     for REGISTERS_TO_PUSH {
-        //         append(*register_pinnings, tprint("            r%: gpr === %1;\n", it));
-        //         append(*register_pinnings, tprint("            pop rsp, r%;\n", it));
-        //     }
-        //     
-        //     pop_all_macro := tprint(POP_ALL_MACRO, builder_to_string(*register_pinnings));
-        //     add_build_string(pop_all_macro, w);
-        //     
-        // }
+        {
+            REGISTERS_TO_PUSH :: string.[
+                "a", "b", "c",  "d",  "si", "di",
+                "8", "9", "10", "11", "12", "13", "14", "15"
+            ];
+
+            register_pinnings: String_Builder;
+            append(*register_pinnings, "PushAll :: () #expand {\n    #asm {\n");
+            for REGISTERS_TO_PUSH {
+                append(*register_pinnings, tprint("            r%: gpr === %1;\n", it));
+                append(*register_pinnings, tprint("            push rsp, r%;\n", it));
+            }
+            append(*register_pinnings, "    }\n}");
+
+            add_build_string(builder_to_string(*register_pinnings), w);
+
+            // reset(*register_pinnings);
+            // for REGISTERS_TO_PUSH {
+            //     append(*register_pinnings, tprint("            r%: gpr === %1;\n", it));
+            //     append(*register_pinnings, tprint("            pop rsp, r%;\n", it));
+            // }
+            // 
+            // pop_all_macro := tprint(POP_ALL_MACRO, builder_to_string(*register_pinnings));
+            // add_build_string(pop_all_macro, w);
+            
+        }
 
         add_build_string(tprint("MAILBAG_SIZE     :: %;", zip.count), w);
         add_build_string(tprint("BOOT_DATA_AREA   :: %;", BOOT_DATA_AREA), w);
@@ -361,7 +379,7 @@ REGISTERS_TO_PUSH :: string.[
 
     write_string("\n=== Creating Disk Image ===\n");
     {
-        DISK_SIZE :: 0x100_000;
+        DISK_SIZE :: 0xa00_000;
         disk_image := cast(*u8) alloc(DISK_SIZE);
         cursor: int;
 
@@ -372,6 +390,7 @@ REGISTERS_TO_PUSH :: string.[
         kernel := file_open(".build/kernel.bin");
         file_read(kernel, disk_image + cursor, file_length(kernel));
         cursor += file_length(kernel);
+        print("Kernel size, bytes: %\n", file_length(kernel));
 
         assert(cursor < MAILBAG_LOCATION);
         cursor = MAILBAG_LOCATION;

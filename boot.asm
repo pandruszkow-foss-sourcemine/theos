@@ -205,7 +205,7 @@ second_sector:
 
 [bits 64]
 long_mode_start:
-    mov rbp, 0x200000
+    mov rbp, 0x1ff000
     mov rsp, rbp
 
     call load_kernel

@@ -57,8 +57,6 @@ vesa_init :: (boot_data: Boot_Data, font: Pnm) {
 vesa_draw_frame :: () {
     #if !ENABLE_VESA return;
 
-    clear_screen();
-
     {
         top_left := 72 + 72 * VESA_WIDTH;
 
@@ -79,16 +77,17 @@ vesa_draw_frame :: () {
 
             for y: 0..vesa.char_height-1 for x: 0..vesa.char_width-1 {
                 brightness := cast(u32) vesa.font.data[source_top_left + x + y * vesa.font.width];
-                t := cast(float) brightness / 255;
-
-                r := cast(u32) (cast(float) theme.background.r * (1 - t) + cast(float) 0x30 * t);
-                g := cast(u32) (cast(float) theme.background.g * (1 - t) + cast(float) 0x30 * t);
-                b := cast(u32) (cast(float) theme.background.b * (1 - t) + cast(float) 0x30 * t);
-
-                blended: u32 = b | (g << 8) | (r << 16);
+                t := cast(float) brightness * theme.shadow / 255;
 
                 line := cursor_y * (vesa.char_height + 2) * VESA_WIDTH;
                 column := cursor_x * vesa.char_width;
+                source := vesa.framebuffer[line + column + x + y * VESA_WIDTH + top_left];
+
+                r := cast(u32) (cast(float) cast(u8) (source >> 16) * (1 - t) + cast(float) 0x18 * t);
+                g := cast(u32) (cast(float) cast(u8) (source >>  8) * (1 - t) + cast(float) 0x18 * t);
+                b := cast(u32) (cast(float) cast(u8) (source)       * (1 - t) + cast(float) 0x18 * t);
+
+                blended: u32 = b | (g << 8) | (r << 16);
                 vesa.framebuffer[line + column + x + y * VESA_WIDTH + top_left] = blended;
             }
 
@@ -153,8 +152,23 @@ vesa_draw_frame :: () {
             }
         }
     }
-    vesa.cursor = 0;
-    vesa.attribute_count = 0;
+}
+
+vesa_blit :: (image: Pnm) {
+    assert(image.type == .PIXMAP);
+    size := image.width * image.height;
+
+    cursor: int;
+    for y: 0..image.height-1 for x: 0..image.width-1 {
+        if x + y * VESA_WIDTH >= vesa.pixels break;
+
+        r := cast(u32) image.data[cursor];
+        g := cast(u32) image.data[cursor + 1];
+        b := cast(u32) image.data[cursor + 2];
+        vesa.framebuffer[(VESA_WIDTH - 1) - x + y * VESA_WIDTH] = (r << 16) | (g << 8) | b;
+        cursor += 3;
+
+    }
 }
 
 
@@ -165,6 +179,9 @@ Pnm :: struct {
 
     type: enum {
         UNINITIALIZED :: 0;
+        ASCII_BITMAP;
+        ASCII_GRAYMAP;
+        ASCII_PIXMAP;
         BITMAP;
         GRAYMAP;
         PIXMAP;
@@ -177,8 +194,8 @@ parse_pnm :: (buffer: *u8) -> Pnm {
     assert(buffer[0] == #char "P");
 
     pnm: Pnm;
-    pnm.type = xx (buffer[1] - #char "0" - 3);
-    assert(pnm.type == .GRAYMAP);
+    pnm.type = xx (buffer[1] - #char "0");
+    assert(pnm.type == .GRAYMAP || pnm.type == .PIXMAP);
 
     is_whitespace :: (char: u8) -> bool {
         return char == 0x20
@@ -216,15 +233,17 @@ parse_pnm :: (buffer: *u8) -> Pnm {
     cursor := 2;
     ConsumeWhitespaceAndComments();
     pnm.width = ParseInt();
+
     ConsumeWhitespaceAndComments();
     pnm.height = ParseInt();
 
     ConsumeWhitespaceAndComments();
-    max_gray_value := ParseInt();
-    assert(max_gray_value < 256);
+    max_value := ParseInt();
+    assert(max_value == 255);
 
     ConsumeWhitespaceAndComments();
     pnm.data = buffer + cursor;
+
     return pnm;
 }
 
@@ -249,7 +268,7 @@ welcome_screen :: () {
     indent = 0;
 }
 
-    print(TITLE, theme.highlight);
+    print(TITLE, theme.primary);
     print("\n\n");
 
     print("Hello, sailor.\n");
@@ -300,7 +319,7 @@ welcome_screen :: () {
     }
     print("\n-------------------------------------------------------------------\n", theme.foreground);
 
-    print("Compiled using ");
+    print("Compiled using ", theme.primary);
     print("Jai ", theme.accent);
     print(COMPILER_VERSION, theme.accent);
     print(".\n");
@@ -308,33 +327,20 @@ welcome_screen :: () {
 
 #if ENABLE_VESA {
     clear_screen :: () {
-
-        if simd_enabled {
-            c: u64 = 0x0060303800603038;
-            #asm SSE {
-                movq color:, c;
-                punpckldq color, color;
-            }
-
-            assert(vesa.buffer_size % 4 == 0);
-            for 0..vesa.pixels / 4 - 1 {
-                target := *vesa.framebuffer[it * 4] #align 16;
-                #asm SSE {
-                    movdqa [target], color;
-                }
-            }
-        } else {
-            for 0..vesa.pixels / 2 - 1 {
-                    << (cast(*u64) vesa.framebuffer + it) = (cast(u64) theme.background.as_u32) | ((cast(u64) theme.background.as_u32) << 32);
-            }
+        for 0..vesa.pixels / 2 - 1 {
+            << (cast(*u64) vesa.framebuffer + it) = (cast(u64) theme.background.as_u32) | ((cast(u64) theme.background.as_u32) << 32);
         }
     }
 
-    theme: struct {
+    theme: Theme;
+    Theme :: struct {
         background:  Color = .{ as_u32 = 0x00603038 };
         foreground:  Color = .{ as_u32 = 0x00f8f8f8 };
+        primary:     Color = .{ as_u32 = 0x00ebbcbc };
         highlight:   Color = .{ as_u32 = 0x00ebbcbc };
         accent:      Color = .{ as_u32 = 0x0081c44b };
+
+        shadow: float = 1.0;
     }
 
     Color :: union {
@@ -362,6 +368,7 @@ welcome_screen :: () {
     }
 
     print :: (text: string, color: Color) {
+        if !text.count return;
         old_color := vesa.attribute_buffer[vesa.attribute_count].color;
         set_color(color);
 
@@ -398,21 +405,25 @@ welcome_screen :: () {
     }
 
     print_hex :: (number: $T, decorate := true) {
+        print_hex(number, theme.foreground, decorate);
+    }
+    
+    print_hex :: (number: $T, color: Color, decorate := true) {
         #assert type_info(T).type == .INTEGER;
-        size :: #run type_info(T).runtime_size;
+        size :: size_of(T);
 
-        if decorate print("0x");
+        if decorate print("0x", color);
 
         result: [size*2] u8;
 
         table := "0123456789abcdef";
-        for 1..size * 2 {
+        for 0..size * 2 {
             index := number >> (it * 4);
             index &= 0xf;
 
-            result[size*2 - it] = table[index];
+            result[size*2 - it - 1] = table[index];
         }
-        print(cast(string) result);
+        print(cast(string) result, color);
     }
 }
 
@@ -564,7 +575,7 @@ welcome_screen :: () {
         print(": ");
 
         value :=
-#insert variable
+        #insert variable
         ;
         print_hex(cast(u64) value); //`
         // else print(number);

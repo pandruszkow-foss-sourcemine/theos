@@ -12,13 +12,9 @@ Boot_Data :: struct {
 }
 boot_data: Boot_Data;
 
-simd_enabled: bool;
-
 #program_export
 kernel_entry :: () {
-    // while true {}
     boot_data = << cast(*type_of(boot_data)) BOOT_DATA_AREA;
-    #if USE_VGA boot_data.vesa_framebuffer = 0x500_000;
 
     idt_init();
     pic_init();
@@ -26,37 +22,59 @@ kernel_entry :: () {
 
     cpu = get_cpu_info();
     page_table_init();
-    simd_enabled = enable_simd(cpu);
-    simd_enabled = false;
+    enable_simd(cpu);
 
     buffer := map_memory(MAILBAG_SIZE);
-    ata_pio_read(xx buffer, (MAILBAG_LOCATION) / 0x200, (MAILBAG_SIZE + 0x200) / 0x200);
+
+    ata_read(buffer, MAILBAG_LOCATION, MAILBAG_SIZE);
     read_zip_file(buffer);
 
     font: Pnm;
+    flower: Pnm;
     for 0..file_count - 1 {
         file := files[it];
 
         if file.name == "font.pgm" {
             font = parse_pnm(file.data);
-            break;
+        }
+
+        if file.name == "plant.ppm" {
+            flower = parse_pnm(file.data);
         }
     }
 
     random_seed = xx rdtsc();
+    enable_ps2_keyboard();
 
     pci_scan_all_devices();
     vesa_init(boot_data, font);
 
-    welcome_screen();
-    print("\n");
+    naysayer_theme := Theme.{
+        foreground = .{ as_u32 = 0x00d1b897 },
+        background = .{ as_u32 = 0x00062329 },
+        primary    = .{ as_u32 = 0x002ec09c },
+        highlight  = .{ as_u32 = 0x00ffffff },
+        accent     = .{ as_u32 = 0x008cde94 },
+        shadow = 1,
+    };
+    theme = naysayer_theme;
+    clear_screen();
+
     pci_print_device_list();
-    print("\n\n");
-    // print(message); print("\n");
-    assert(false, "This is a fun assertion message!");
+
+    vesa_draw_frame();
+    print("\nHello, world\n");
+
     vesa_draw_frame();
 
-    while true {};
+    hda := hda_discover();
+    hda_init(hda);
+
+    vesa_draw_frame();
+
+    assert(false, "This is not good!");
+
+    while true #asm { hlt; }
 }
 
 crt_memset :: (target: *u8, value: s32, count: u64) -> *void #c_call {
@@ -152,6 +170,10 @@ io_delay :: () {
     }
 }
 
+divru :: (dividend: $T, divisor: T) -> T {
+    return (dividend + (divisor - 1)) / divisor;
+}
+
 random_seed: u64;
 
 random :: (state: *u64 = *random_seed) -> u64 {
@@ -168,10 +190,10 @@ wait :: (time: int = 10) {
     for 1..1000 * time { x := it; }
 }
 
-enable_simd :: (cpu: Cpu_X86) -> bool {
+enable_simd :: (cpu: Cpu_X86) {
     CR0_MP         ::   1 << 1;
     CR0_EM_CLEAR   :: ~(1 << 2);
-    CR4_\   OSFXSR ::   1 << 9;
+    CR4_OSFXSR     ::   1 << 9;
     CR4_OSXMMEXCPT ::   1 << 10;
     CR4_OSXSAVE    ::   1 << 18;
 
@@ -194,7 +216,15 @@ enable_simd :: (cpu: Cpu_X86) -> bool {
         set_cr4 cr4;
     }
 
-    return supported;
+    if check_feature(cpu.feature_leaves, .AVX) #asm XSAVE {
+        index: gpr === c;
+        xor index, index;
+
+        xcr0: gpr === a;
+        xgetbv _:, xcr0, index;
+        or xcr0, 7;
+        // xsetbv;
+    }
 }
 
 
@@ -306,19 +336,40 @@ pic_enable_irq :: (irq: u8) {
     port_write(port, value);
 }
 
+pic_end_of_interrupt :: (irq: u8) {
+    using Pic_Port;
+    using Pic_Command;
+    if irq >= 8 {
+        port_write(xx SLAVE_DATA, xx END_OF_INTERRUPT);
+    }
+    port_write(xx MASTER_DATA, xx END_OF_INTERRUPT);
+}
+
 scan_table         :: "\0#1234567890-=\0\tqwertyuiop[]\0\0asdfghjkl;'`\0\\zxcvbnm,./\0*\0 ";
 scan_table_shifted :: "\0#!@#$%^&*()_+\0\0QWERTYUIOP{}\0\0ASDFGHJKL:\"~\0|ZXCVBNM<>?\0*\0 ";
 
-keyboard_isr :: () {
-    print("A key has been pressed: '");
-    key := port_read(0x60);
+keyboard_isr :: () #no_call {
+    #asm {
+        rsp: gpr === sp;
+        sub rsp, 0x200;
+        cli;
+    }
 
-    char: string;
-    char.data = *scan_table[key];
-    char.count = 1;
-    print(char);
-    print("'\n");
-    while true {}
+    push_context Context.{} {
+        key := port_read(0x60);
+
+        char: string;
+        char.data = *scan_table[key];
+        char.count = 1;
+        print(char);
+        vesa_draw_frame();
+        pic_end_of_interrupt(0x1);
+    }
+
+    #asm {
+        add rsp, 0x220;
+        sti;
+    }
 }
 
 enable_ps2_keyboard :: () {
@@ -399,6 +450,8 @@ weekdays :: string.[
     "Saturday",
 ];
 
+
+
 /* Memory map:
 
 4Mb is identity mapped.
@@ -410,12 +463,10 @@ weekdays :: string.[
 
 */
 
-VIDEO_MEMORY_BASE :: IDENTITY_MAP_SIZE;
-VIDEO_MEMORY_SIZE :: 0x800_000;
 IDENTITY_MAP_SIZE :: 0x400_000;
 PAGE_TABLE_RANGE :: 0x200_000;
 
-PAGE_TABLE_COUNT :: (VIDEO_MEMORY_SIZE + IDENTITY_MAP_SIZE) / PAGE_TABLE_RANGE;
+PAGE_TABLE_COUNT :: (IDENTITY_MAP_SIZE) / PAGE_TABLE_RANGE;
 #assert (PAGE_TABLE_COUNT <= 0x200);
 
 page_tables: [PAGE_TABLE_COUNT][0x200] u64 #align 0x1000;
@@ -492,8 +543,8 @@ get_or_create_page_table :: (table: *u64, entry: u64) -> *u64 {
     return cast(*u64) (phys + VIRTUAL_MIRROR);
 }
 
-map_memory :: (size_bytes: int, virtual_address: u64 = xx,no_check -1, physical_address: u64 = xx,no_check -1, loc := #caller_location) -> *void {
-    page_count := (size_bytes + 0x800) / 0x1000;
+map_memory :: (size_bytes: int, virtual_address: u64 = xx,no_check -1, physical_address: u64 = xx,no_check -1, flags := Page_Flags.PRESENT | .READ_WRITE, loc := #caller_location) -> *void {
+    page_count := (size_bytes + (0x1000 - 1)) / 0x1000;
 
     target := physical_address;
     if target == xx,no_check -1 {
@@ -510,13 +561,13 @@ map_memory :: (size_bytes: int, virtual_address: u64 = xx,no_check -1, physical_
 
     for 0..page_count-1 {
         offset := cast(u64) it * 4096;
-        map_page(source + offset, target + offset, loc);
+        map_page(source + offset, target + offset, flags, loc);
     }
 
     return xx source;
 }
 
-map_page :: (virtual_address: u64, physical_address: u64, loc := #caller_location) {
+map_page :: (virtual_address: u64, physical_address: u64, flags := Page_Flags.PRESENT | .READ_WRITE, loc := #caller_location) {
     using Page_Flags;
 
     mask: u64 = 0b111111111;
@@ -530,10 +581,10 @@ map_page :: (virtual_address: u64, physical_address: u64, loc := #caller_locatio
     pt   := get_or_create_page_table(pd,        pd_offset);
     assert(!(pt[pt_offset] & xx PRESENT), "Attempting to map a virtual page that is already present", loc);
 
-    pt[pt_offset] = physical_address | cast(u64) (PRESENT | READ_WRITE);
+    pt[pt_offset] = physical_address | cast(u64) flags;
 }
 
-PAGE_FRAME_BASE :: 0xd00_000;
+PAGE_FRAME_BASE :: IDENTITY_MAP_SIZE;
 page_frame_watermark: int;
 
 get_new_page_frame :: (count: int = 1) -> u64 {
@@ -548,7 +599,7 @@ address_is_page :: (address: u64) -> bool {
     return address % 0x1000 == 0;
 }
 
-VIRTUAL_PAGE_BASE :: 0xd00_000;
+VIRTUAL_PAGE_BASE :: IDENTITY_MAP_SIZE;
 virtual_page_watermark: int;
 
 get_new_virtual_page :: (count: int = 1) -> u64 {
@@ -556,6 +607,7 @@ get_new_virtual_page :: (count: int = 1) -> u64 {
     virtual_page_watermark += count;
     return xx address;
 }
+
 
 get_physical_address :: (virtual_address: *void) -> u64, present: bool {
     using Page_Flags;
@@ -619,7 +671,8 @@ page_fault_handler :: () #no_call {
         #asm {
             get_cr2 cr2;
         }
-        print("CR2 contains       "); print_hex(cr2); print(".\n\n");
+        print("CR2 contains       "); print_hex(cr2); print(".\n");
+        print("VESA buffer        "); print_hex(cast(u64) vesa.framebuffer); print(".\n\n");
 
         phys, present := get_physical_address(xx cr2);
         if present {
@@ -729,7 +782,8 @@ ata_pio_read :: (buffer: *u16, start_sector: u32, sector_count: u8) -> Ata_Error
     ata_pio_start(start_sector, sector_count);
     port_write(xx COMMAND, xx Ata_Command.READ);
 
-    for sector: 0..sector_count - 1 {
+    count := ifx sector_count == 0 then 256 else sector_count;
+    for sector: 0..count - 1 {
         ata_await_transfer_request();
 
         for 0..0x100 - 1 {
@@ -739,13 +793,30 @@ ata_pio_read :: (buffer: *u16, start_sector: u32, sector_count: u8) -> Ata_Error
     return ata_get_error();
 }
 
+ata_read :: (buffer: *u8, start_address: int, size_bytes: int) {
+    sector_count := (size_bytes    + 0x1ff) / 0x200;
+    start_lba    := (start_address + 0x1ff) / 0x200;
+
+    num_reads_required := sector_count / 256;
+    num_sectors_left   := sector_count % 256;
+
+    for 0..num_reads_required-1 {
+        lba_offset := 0x100 * it;
+        ata_pio_read(xx (buffer + 0x200 * lba_offset), cast(u32) (start_lba + lba_offset), 0);
+    }
+
+    lba := 0x100 * num_reads_required;
+    ata_pio_read(xx (buffer + 0x200 * lba), cast(u32) (start_lba + lba), xx num_sectors_left);
+}
+
 ata_pio_write :: (buffer: *u16, start_sector: u32, sector_count: u8) -> Ata_Error {
     using Ata_Port;
 
     ata_pio_start(start_sector, sector_count);
     port_write(xx COMMAND, xx Ata_Command.WRITE);
 
-    for sector: 0..sector_count - 1 {
+    count := ifx sector_count == 0 then 256 else sector_count;
+    for sector: 0..count - 1 {
         ata_await_transfer_request();
 
         for 0..0x100 - 1 {

@@ -204,7 +204,7 @@ pci_print_device_list :: () {
     print("\nScanning PCI devices...\n");
 
     print("----------------------------------------\n", theme.foreground);
-    print("|      Class      | Subclass | Address |\n");
+    print("|      Class      | Subclass |   Bus   |\n");
     print("----------------------------------------\n", theme.foreground);
     for 0..pci_device_count - 1 {
         device_info := pci_device_info[it];
@@ -229,39 +229,117 @@ pci_print_device_list :: () {
 
 
 
-hda_detect :: () {
+Hda :: struct {
+    pci_info: Pci_Device_Info;
+    mm: *u8;
+    codec_bitmap: u16;
+    command_buffer: *u32;
+}
+
+hda_read :: (hda: *Hda, reg: Hda_Register, $T: Type = u32) -> T {
+    return << cast(*T) (hda.mm + cast(int) reg);
+}
+
+hda_write :: (hda: *Hda, reg: Hda_Register, value: $T) {
+    << cast(*T) (hda.mm + cast(int) reg) = value;
+}
+
+hda_set_bit :: (hda: *Hda, reg: Hda_Register, bit: int) {
+    register := cast(*u32) (hda.mm + cast(int) reg);
+    << register |= xx (1 << bit);
+}
+
+hda_unset_bit :: (hda: *Hda, reg: Hda_Register, bit: int) {
+    register := cast(*u32) (hda.mm + cast(int) reg);
+    << register &= xx ~(1 << bit);
+}
+
+hda_discover :: () -> Pci_Device_Info, bool {
     assert(pci_devices_scanned);
 
-    for 0..pci_device_info.count-1 {
+    for 0..pci_device_count-1 {
         info := pci_device_info[it];
         if info.header.class_code == .MULTIMEDIA && info.header.subclass == 0x3 {
-            print("\nFound HDA at ");
-            print(info.bus);
-            print(":");
-            print(info.index);
-            print(":");
-            print(info.function);
-
-            print("\nHeader type: "); print_hex(info.header.header_type);
-            print("\n\nConfig registers:\n");
-
-            for 0..0xf {
-                print_hex(cast(u8) it); print(": ");
-                bar := pci_read_config_register(info, cast(u32) it);
-                print_hex(bar);
-                print("\n");
-            }
-
-            base, limit, io_space := pci_get_base_address(info, 0);
-            print("\nBase:\n  ");
-            print_hex(base);
-            print("\n\nLimit:\n  ");
-            print_hex(limit);
-            print("\n\nIO Space:\n  ");
-            if io_space print("true");
-            else print("false");
-
-            print("\n");
+            return info, true;
         }
+    }
+
+    return .{}, false;
+}
+
+Hda_Register :: enum {
+    GCTL      :: 0x08;
+    WAKEEN    :: 0x0c;
+    STATESTS  :: 0x0e;
+
+    CORBLBASE :: 0x40;
+    CORBUBASE :: 0x44;
+    CORBWP    :: 0x48;
+    CORBRP    :: 0x4a;
+    CORBCTL   :: 0x4c;
+    CORBSIZE  :: 0x4e;
+
+    RIRBLBASE :: 0x50;
+    RIRBUBASE :: 0x54;
+    RIRBWP    :: 0x58;
+    RIRBRP    :: 0x5a;
+    RIRBCTL   :: 0x5c;
+    RIRBSIZE  :: 0x5e;
+}
+
+hda_init :: (pci: Pci_Device_Info) {
+    hda: Hda;
+
+    base, limit, io_space := pci_get_base_address(pci, 0);
+    assert(!io_space);
+    assert(base > 0);
+    assert(limit > 0);
+
+    hda.mm = cast(*u8) map_memory(limit, physical_address = base);
+    hda.command_buffer = map_memory(0x1000, flags = Page_Flags.PRESENT | .READ_WRITE | .CACHE_DISABLE);
+
+    hda_set_bit(*hda, .GCTL, 1);
+    gctl := hda_read(*hda, .GCTL);
+    assert(!gctl);
+
+    hda_set_bit(*hda, .GCTL, 0);
+    while !gctl {
+        gctl = hda_read(*hda, .GCTL);
+    }
+
+    wait(100000);
+    hda.codec_bitmap = hda_read(*hda, .STATESTS, u16);
+    assert(hda.codec_bitmap > 0, "No codecs enumerated");
+
+    {
+        hda_unset_bit(*hda, .CORBCTL, 1);
+
+        corbsize := hda_read(*hda, .CORBSIZE, u8);
+        assert(corbsize >> 4 == 0b0100, "Large CORB size not supported");
+        hda_set_bit(*hda, .CORBSIZE, 1);
+
+        corb_base := hda.command_buffer;
+        hda_write(*hda, .CORBLBASE, cast(u32)            corb_base);
+        hda_write(*hda, .CORBUBASE, cast(u32) (cast(u64) corb_base) >> 32);
+
+        hda_set_bit(*hda, .CORBRP, 15);
+        hda_write(*hda, .CORBWP, cast(u16) 0);
+
+        hda_set_bit(*hda, .CORBCTL, 1);
+    }
+
+    {
+        hda_unset_bit(*hda, .RIRBCTL, 1);
+
+        rirbsize := hda_read(*hda, .RIRBSIZE, u8);
+        assert(rirbsize >> 4 == 0b0100, "Large RIRB size not supported");
+        hda_set_bit(*hda, .RIRBSIZE, 1);
+
+        rirb_base := hda.command_buffer + 256;
+        hda_write(*hda, .RIRBLBASE, cast(u32)            rirb_base);
+        hda_write(*hda, .RIRBUBASE, cast(u32) (cast(u64) rirb_base) >> 32);
+
+        hda_set_bit(*hda, .RIRBWP, 15);
+        hda_set_bit(*hda, .RIRBCTL, 1);
     }
 }

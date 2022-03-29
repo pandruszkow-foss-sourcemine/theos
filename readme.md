@@ -1,2 +1,2 @@
 
-![](recording.gif)
+![](screenshot.png)
