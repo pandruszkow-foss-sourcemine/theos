@@ -49,15 +49,6 @@ kernel_entry :: () {
     pci_scan_all_devices();
     vesa_init(boot_data, font);
 
-    naysayer_theme := Theme.{
-        foreground = .{ as_u32 = 0x00d1b897 },
-        background = .{ as_u32 = 0x00062329 },
-        primary    = .{ as_u32 = 0x002ec09c },
-        highlight  = .{ as_u32 = 0x00ffffff },
-        accent     = .{ as_u32 = 0x008cde94 },
-        shadow = 1,
-    };
-    theme = naysayer_theme;
     clear_screen();
 
     pci_print_device_list();
@@ -70,9 +61,10 @@ kernel_entry :: () {
     hda := hda_discover();
     hda_init(hda);
 
-    vesa_draw_frame();
+    // assert(false, "This is not good!");
 
-    assert(false, "This is not good!");
+        << cast(*u8) 0xf3409834609 = 10;
+    vesa_draw_frame();
 
     while true #asm { hlt; }
 }
@@ -452,16 +444,6 @@ weekdays :: string.[
 
 
 
-/* Memory map:
-
-4Mb is identity mapped.
-
-0Mb -> 1Mb: Bootloader, BIOS
-1Mb -> 2Mb: Kernel code + data
-
-4Mb -> 12Mb: Video
-
-*/
 
 IDENTITY_MAP_SIZE :: 0x400_000;
 PAGE_TABLE_RANGE :: 0x200_000;
@@ -661,10 +643,10 @@ page_fault_handler :: () #no_call {
         mov stack_data, stack;
     }
 
-    vesa.cursor = 0;
-    vesa.attribute_count = 0;
+    // vesa.cursor = 0;
+    // vesa.attribute_count = 0;
     push_context Context.{} {
-        print("\n\nAn exception has occured:  ");
+        print("\n\nAn exception has occurred:  ");
         print("Page fault\n\n", theme.accent);
 
         cr2: u64;

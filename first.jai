@@ -40,7 +40,7 @@ isr_slot_0x% :: () #no_call {
     push_context c {
         clear_screen();
 
-        print("\n\n   AN EXCEPTION HAS OCCURRED:  ", theme.primary);
+        print("\n\n   An exception has occurred:  ", theme.primary);
         print("%\n", theme.accent);
 
         print("\n   Interrupt frame:\n");
