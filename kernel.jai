@@ -1,9 +1,11 @@
 
+#import "Basic";
 #import "Machine_X64";
 #load "elf/elf.jai";
 #load "pci.jai";
 #load "graphics.jai";
 #load "config.jai";
+#load "keyboard.jai";
 
 cpu: Cpu_X86;
 
@@ -14,12 +16,14 @@ boot_data: Boot_Data;
 
 #program_export
 kernel_entry :: () {
+    // dont();
     boot_data = << cast(*type_of(boot_data)) BOOT_DATA_AREA;
 
     idt_init();
     pic_init();
     cmos_init();
 
+    context.allocator.proc = allocate;
     cpu = get_cpu_info();
     page_table_init();
     enable_simd(cpu);
@@ -46,27 +50,34 @@ kernel_entry :: () {
     random_seed = xx rdtsc();
     enable_ps2_keyboard();
 
-    pci_scan_all_devices();
     vesa_init(boot_data, font);
 
     clear_screen();
-
-    pci_print_device_list();
-
-    vesa_draw_frame();
-    print("\nHello, world\n");
-
+    // welcome_screen();
     vesa_draw_frame();
 
-    hda := hda_discover();
-    hda_init(hda);
+    // pci_print_device_list();
+    print("\n> ");
 
-    // assert(false, "This is not good!");
-
-        << cast(*u8) 0xf3409834609 = 10;
     vesa_draw_frame();
+    // hda := hda_discover();
+    // hda_init(hda);
 
     while true #asm { hlt; }
+}
+
+allocate :: (mode: Allocator_Mode, size: s64, old_size: s64, old_memory_pointer: *void, allocator_data: *void) -> *void {
+    if mode == .FREE {
+        return ":-)".data;
+    }
+
+    if mode == .RESIZE {
+        if size < old_size || size < 4096 {
+            return old_memory_pointer;
+        }
+    }
+
+    return map_memory(size);
 }
 
 crt_memset :: (target: *u8, value: s32, count: u64) -> *void #c_call {
@@ -136,7 +147,7 @@ in :: (port: u16, $T: Type = u32) -> T {
     return value;
 }
 
-port_write :: (port: u16, value: u8) {
+port_write :: (port: u16, value: u8) #no_context {
     #asm {
         port  === d;
         value === a;
@@ -144,7 +155,7 @@ port_write :: (port: u16, value: u8) {
     }
 }
 
-port_read :: (port: u16) -> u8 {
+port_read :: (port: u16) -> u8 #no_context {
     value: u8;
     #asm {
         port  === d;
@@ -212,10 +223,9 @@ enable_simd :: (cpu: Cpu_X86) {
         index: gpr === c;
         xor index, index;
 
-        xcr0: gpr === a;
-        xgetbv _:, xcr0, index;
-        or xcr0, 7;
-        // xsetbv;
+        xgetbv xcr0_h:, xcr0_l:, index;
+        or xcr0_l, 7;
+        xsetbv xcr0_h, xcr0_l, index;
     }
 }
 
@@ -269,11 +279,32 @@ idt_init :: () {
     idt_desc.base = *idt;
 
     register_generated_isrs();
-    idt_add_handler(xx page_fault_handler, 0xe);
+    idt_add_handler(xx page_fault_handler, 0x0e);
+    idt_add_handler(xx syscall,            0x80);
 
     address := *idt_desc;
     #asm {
         lidt [address];
+    }
+}
+
+syscall :: () #no_call {
+    #asm {
+        cli;
+    }
+
+    syscall_print :: () #c_call {
+        message := << cast(*string) (0x400_000 - size_of(string));
+        push_context .{} {
+            print(message);
+        }
+    }
+
+    syscall_print();
+
+    #asm {
+        sti;
+        iret.q;
     }
 }
 
@@ -328,45 +359,14 @@ pic_enable_irq :: (irq: u8) {
     port_write(port, value);
 }
 
-pic_end_of_interrupt :: (irq: u8) {
+pic_end_of_interrupt :: (irq: u8) #c_call {
     using Pic_Port;
     using Pic_Command;
+
     if irq >= 8 {
-        port_write(xx SLAVE_DATA, xx END_OF_INTERRUPT);
+        port_write(xx SLAVE_CMD, xx END_OF_INTERRUPT);
     }
-    port_write(xx MASTER_DATA, xx END_OF_INTERRUPT);
-}
-
-scan_table         :: "\0#1234567890-=\0\tqwertyuiop[]\0\0asdfghjkl;'`\0\\zxcvbnm,./\0*\0 ";
-scan_table_shifted :: "\0#!@#$%^&*()_+\0\0QWERTYUIOP{}\0\0ASDFGHJKL:\"~\0|ZXCVBNM<>?\0*\0 ";
-
-keyboard_isr :: () #no_call {
-    #asm {
-        rsp: gpr === sp;
-        sub rsp, 0x200;
-        cli;
-    }
-
-    push_context Context.{} {
-        key := port_read(0x60);
-
-        char: string;
-        char.data = *scan_table[key];
-        char.count = 1;
-        print(char);
-        vesa_draw_frame();
-        pic_end_of_interrupt(0x1);
-    }
-
-    #asm {
-        add rsp, 0x220;
-        sti;
-    }
-}
-
-enable_ps2_keyboard :: () {
-    idt_add_handler(xx keyboard_isr, 0x21);
-    pic_enable_irq(0x1);
+    port_write(xx MASTER_CMD, xx END_OF_INTERRUPT);
 }
 
 
@@ -415,6 +415,29 @@ cmos_read :: ($register: Cmos_Register) -> u8 {
     }
 
     return result;
+}
+
+print_cmos_datetime_string :: () -> string {
+    print(weekdays[cmos_read(.WEEKDAY) - 1]);
+    print(" ");
+    print(months[cmos_read(.MONTH) - 1]);
+    print(" ");
+    print(cmos_read(.DAY_OF_THE_MONTH));
+    print(", ");
+    print(cmos_read(.YEAR) + 2000);
+    print(", ");
+
+    hours := cmos_read(.HOURS);
+    if hours < 10 print("0"); print(hours);
+    print(":");
+
+    minutes := cmos_read(.MINUTES);
+    if minutes < 10 print("0"); print(minutes);
+    print(":");
+
+    seconds := cmos_read(.SECONDS);
+    if seconds < 10 print("0"); print(seconds);
+    print(".\n");
 }
 
 months :: string.[
@@ -833,8 +856,8 @@ Zip_Entry :: struct {
 File_Type :: enum {
     UNKNOWN;
     TEXT;
-    BINARY_EXECUTABLE;
-    BINARY_DATA;
+    EXECUTABLE;
+    BIN_DATA;
     PICTURE;
     SOUND;
 }
@@ -852,6 +875,27 @@ file_count: int;
 ZIP_EOCD_SIGNATURE :: 0x06054b50;
 ZIP_CD\ _SIGNATURE :: 0x02014b50;
 ZIP_LOCAL_HEADER_SIZE :: 0x1e;
+
+print_file_list :: () {
+    ti := type_info(File_Type);
+
+    print("|      Name      |    Size    |    Type    |\n");
+    print("--------------------------------------------\n", theme.foreground);
+    for 0..file_count - 1 {
+        file := files[it];
+        print("| ");
+        print(file.name);
+        for 0..14 - file.name.count print(" ");
+        print("| ");
+        print_hex(cast(u32) file.size);
+
+        print(" | ");
+        type := ti.names[file.type];
+        for 0..9 - type.count print(" ");
+        print(type);
+        print(" |\n");
+    }
+}
 
 read_zip_file :: (buffer: *void) {
     cursor: int;
@@ -881,14 +925,20 @@ read_zip_file :: (buffer: *void) {
         file.size = header.compressed_len;
         file.data = xx (xx buffer + header.chunk_offset + ZIP_LOCAL_HEADER_SIZE + header.name_len);
 
-        // if file.name.count > 4 {
-        //     extension: string;
-        //     extension.count = 4;
-        //     extension.data = *file.name[file.name.count - 5];
-        //     if extension == ".txt" file.type = .TEXT;
-        //     else if extension == ".pgm" file.type = .PICTURE;
-        // }
-        // while true {}
+        if file.name.count > 4 {
+            extension: string;
+            extension.count = 4;
+            extension.data = *file.name[file.name.count - 4];
+            if extension == ".txt" file.type = .TEXT;
+            else if extension == ".pgm" file.type = .PICTURE;
+            else if extension == ".ppm" file.type = .PICTURE;
+        }
+
+        if file.type == .UNKNOWN && file.size > size_of(Elf64_Ehdr) {
+            if file.data[0] == 0x7f && file.data[1] == 0x45 && file.data[2] == 0x4c && file.data[3] == 0x46 {
+                file.type = .EXECUTABLE;
+            }
+        }
 
         files[file_count] = file;
         file_count += 1;
@@ -923,4 +973,12 @@ load_elf :: (file_index: int) {
 
     entry_point := << cast(*()) *elf.e_entry;
     entry_point();
+}
+
+dont :: () #expand {
+    while true {
+        #asm {
+            hlt;
+        }
+    }
 }

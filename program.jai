@@ -1,9 +1,10 @@
 
 #program_export
 start :: () {
-    screen := cast(*u8) 0xb8000;
+    message := "This is a fun test, again\n";
+    << cast(*string) (0x400_000 - size_of(string)) = message;
 
-    for cast([] u8) "This is a fun test, again" {
-        screen[it_index * 2] = it;
+    #asm {
+        int 0x80;
     }
 }

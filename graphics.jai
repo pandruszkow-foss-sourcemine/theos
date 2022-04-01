@@ -10,10 +10,15 @@ Vesa :: struct {
     char_height: int;
 
     cursor: int;
+    old_cursor: int;
     text_buffer: *u8;
 
-    attribute_count: int;
-    attribute_buffer: *Attribute;
+    attr_count: int;
+    attr_buffer: *Attribute;
+    attr_cursor: int;
+
+    cursor_x: int;
+    cursor_y: int;
 
     font: Pnm;
 }
@@ -46,7 +51,7 @@ vesa_init :: (boot_data: Boot_Data, font: Pnm) {
     vesa.char_height = font.height;
 
     vesa.text_buffer = map_memory(0x10_000);
-    vesa.attribute_buffer = map_memory(0x10_000);
+    vesa.attr_buffer = map_memory(0x10_000);
 
     vesa.font = font;
     vesa.cursor = 0;
@@ -60,10 +65,10 @@ vesa_draw_frame :: () {
     {
         top_left := 72 + 72 * VESA_WIDTH;
 
-        cursor_x: int;
-        cursor_y: int;
+        cursor_x := vesa.cursor_x;
+        cursor_y := vesa.cursor_y;
 
-        for 0..vesa.cursor - 1 {
+        for vesa.old_cursor..vesa.cursor - 1 {
             char := vesa.text_buffer[it];
             if char == 0 continue;
             if char == #char "\r" continue;
@@ -102,19 +107,18 @@ vesa_draw_frame :: () {
     {
         top_left := 70 + 70 * VESA_WIDTH;
 
-        cursor_x: int;
-        cursor_y: int;
+        cursor_x := vesa.cursor_x;
+        cursor_y := vesa.cursor_y;
 
-        attr_cursor: int;
         color := theme.foreground;
 
-        for 0..vesa.cursor - 1 {
-            if vesa.attribute_count > attr_cursor {
-                attr := vesa.attribute_buffer[attr_cursor];
-                while attr.start_position == it && vesa.attribute_count > attr_cursor {
+        for vesa.old_cursor..vesa.cursor - 1 {
+            if vesa.attr_count > vesa.attr_cursor {
+                attr := vesa.attr_buffer[vesa.attr_cursor];
+                while attr.start_position == it && vesa.attr_count > vesa.attr_cursor {
                     color = attr.color;
-                    attr_cursor += 1;
-                    attr = vesa.attribute_buffer[attr_cursor];
+                    vesa.attr_cursor += 1;
+                    attr = vesa.attr_buffer[vesa.attr_cursor];
                 }
             }
 
@@ -151,6 +155,10 @@ vesa_draw_frame :: () {
                 cursor_y += 1;
             }
         }
+
+        vesa.cursor_x = cursor_x;
+        vesa.cursor_y = cursor_y;
+        vesa.old_cursor = vesa.cursor;
     }
 }
 
@@ -268,32 +276,14 @@ welcome_screen :: () {
     indent = 0;
 }
 
+    print("\n");
     print(TITLE, theme.primary);
     print("\n\n");
 
     print("Hello, sailor.\n");
+
     print("Boot time is ");
-
-    print(weekdays[cmos_read(.WEEKDAY) - 1]);
-    print(" ");
-    print(months[cmos_read(.MONTH) - 1]);
-    print(" ");
-    print(cmos_read(.DAY_OF_THE_MONTH));
-    print(", ");
-    print(cmos_read(.YEAR) + 2000);
-    print(", ");
-
-    hours := cmos_read(.HOURS);
-    if hours < 10 print("0"); print(hours);
-    print(":");
-
-    minutes := cmos_read(.MINUTES);
-    if minutes < 10 print("0"); print(minutes);
-    print(":");
-
-    seconds := cmos_read(.SECONDS);
-    if seconds < 10 print("0"); print(seconds);
-    print(".\n");
+    print_cmos_datetime_string();
 
     print("There are ");
     print(file_count);
@@ -322,13 +312,19 @@ welcome_screen :: () {
     print("Compiled using ", theme.primary);
     print("Jai ", theme.accent);
     print(COMPILER_VERSION, theme.accent);
-    print(".\n");
+    print(".\n\n");
 }
 
 #if ENABLE_VESA {
     clear_screen :: () {
+        vesa.attr_count = 0;
+        vesa.attr_cursor = 0;
+        vesa.cursor = 0;
+        vesa.old_cursor = 0;
+        vesa.cursor_x = 0;
+        vesa.cursor_y = 0;
         for 0..vesa.pixels / 2 - 1 {
-            << (cast(*u64) vesa.framebuffer + it) = (cast(u64) theme.background.as_u32) | ((cast(u64) theme.background.as_u32) << 32);
+                << (cast(*u64) vesa.framebuffer + it) = (cast(u64) theme.background.as_u32) | ((cast(u64) theme.background.as_u32) << 32);
         }
     }
 
@@ -359,8 +355,8 @@ welcome_screen :: () {
         attribute: Attribute;
         attribute.start_position = vesa.cursor;
         attribute.color = color;
-        vesa.attribute_buffer[vesa.attribute_count] = attribute;
-        vesa.attribute_count += 1;
+        vesa.attr_buffer[vesa.attr_count] = attribute;
+        vesa.attr_count += 1;
     }
 
     print :: (text: string) {
@@ -369,7 +365,7 @@ welcome_screen :: () {
 
     print :: (text: string, color: Color) {
         if !text.count return;
-        old_color := vesa.attribute_buffer[vesa.attribute_count].color;
+        old_color := vesa.attr_buffer[vesa.attr_count].color;
         set_color(color);
 
         crt_memcpy(vesa.text_buffer + vesa.cursor, text.data, xx text.count);

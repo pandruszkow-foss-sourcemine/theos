@@ -198,12 +198,10 @@ pci_get_base_address :: (info: Pci_Device_Info, bar: u32) -> base: u64, limit: u
 }
 
 pci_print_device_list :: () {
-    if !pci_devices_scanned pci_scan_all_devices();
+    // if !pci_devices_scanned pci_scan_all_devices();
 
     ti := type_info(Pci_Class_Code);
-    print("\nScanning PCI devices...\n");
 
-    print("----------------------------------------\n", theme.foreground);
     print("|      Class      | Subclass |   Bus   |\n");
     print("----------------------------------------\n", theme.foreground);
     for 0..pci_device_count - 1 {
@@ -224,7 +222,6 @@ pci_print_device_list :: () {
         print(device_info.function);
         print(" |\n");
     }
-    print("----------------------------------------\n", theme.foreground);
 }
 
 

@@ -49,7 +49,7 @@ isr_slot_0x% :: () #no_call {
         print("   FLAGS:  "); print_hex(stack_data.flags, theme.primary); print("\n");
         print("   SP:     "); print_hex(stack_data.sp, theme.primary);    print("\n");
         print("   SS:     "); print_hex(stack_data.ss, theme.primary);    print("\n");
-        print("\n   Error code: "); print_hex(cast(u8) error_code, theme.primary);    print("\n");
+        print("\n   Error code: "); print_hex(cast(u32) error_code, theme.primary);    print("\n");
         #if ENABLE_VESA vesa_draw_frame();
     }
 
@@ -111,7 +111,7 @@ interrupts: [] struct { message: string; slot: int; } = .[
     BOOT_DATA_SIZE          :: 0x1000;
 
     PAGE_TABLE_ADDRESS      :: BOOT_DATA_AREA + BOOT_DATA_SIZE;
-    PAGE_TABLE_SIZE         :: 0x6000;
+    PAGE_TABLE_SIZE         :: 0x4000;
 
     KERNEL_START_ADDRESS    :: PAGE_TABLE_ADDRESS + PAGE_TABLE_SIZE;
 
@@ -162,23 +162,25 @@ interrupts: [] struct { message: string; slot: int; } = .[
 
             register_pinnings: String_Builder;
             append(*register_pinnings, "PushAll :: () #expand {\n    #asm {\n");
+            append(*register_pinnings, "        rsp: gpr === sp;\n");
             for REGISTERS_TO_PUSH {
-                append(*register_pinnings, tprint("            r%: gpr === %1;\n", it));
-                append(*register_pinnings, tprint("            push rsp, r%;\n", it));
+                append(*register_pinnings, tprint("        r%: gpr === %1;\n", it));
+                append(*register_pinnings, tprint("        push rsp, r%;\n", it));
             }
             append(*register_pinnings, "    }\n}");
 
             add_build_string(builder_to_string(*register_pinnings), w);
 
-            // reset(*register_pinnings);
-            // for REGISTERS_TO_PUSH {
-            //     append(*register_pinnings, tprint("            r%: gpr === %1;\n", it));
-            //     append(*register_pinnings, tprint("            pop rsp, r%;\n", it));
-            // }
-            // 
-            // pop_all_macro := tprint(POP_ALL_MACRO, builder_to_string(*register_pinnings));
-            // add_build_string(pop_all_macro, w);
-            
+            reset(*register_pinnings);
+            append(*register_pinnings, "PopAll :: () #expand {\n    #asm {\n");
+            append(*register_pinnings, "        rsp: gpr === sp;\n");
+            for REGISTERS_TO_PUSH {
+                append(*register_pinnings, tprint("        r%: gpr === %1;\n", it));
+                append(*register_pinnings, tprint("        pop rsp, r%;\n", it));
+            }
+            append(*register_pinnings, "    }\n}");
+
+            add_build_string(builder_to_string(*register_pinnings), w);
         }
 
         add_build_string(tprint("MAILBAG_SIZE     :: %;", zip.count), w);
@@ -444,3 +446,35 @@ assemble :: () -> bool {
 #import "File";
 #import "Basic";
 #import "String";
+
+
+
+
+
+
+
+
+
+
+
+// This is a dummy data type that invokes the for_expansion below.
+all_messages: struct {};
+
+for_expansion :: (messages: *type_of(all_messages), body: Code, flags: For_Flags) #expand {
+    #assert(flags == 0);  // No options are supported.
+
+    // This for_expansion quits on the first COMPLETE, so it's not suitable
+    // if you launch multiple workspaces. It's just a starter loop to help
+    // with simple metaprogram stuff.
+
+    `it_index := -1;
+    while 1 {
+        `it := compiler_wait_for_message();
+        if !it break;
+        it_index += 1;
+        
+        if it.kind == .COMPLETE break;
+
+        #insert body;
+    }
+}

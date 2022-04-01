@@ -11,6 +11,7 @@
 
 %define dbs 0x13
 %define dbs_read 0x02
+%define dbs_ext_read 0x42
 
 %define PRINT_MODES 0
 
@@ -125,6 +126,8 @@ start:
     mov dword [boot_data_area], eax
 %endif ; ENABLE_VESA
 
+    call load_kernel_dbs
+    ; jmp $
     ; === Switch to Long Mode ===
     mov edi, page_table_address
     jmp SwitchToLongMode
@@ -201,6 +204,44 @@ times 0x1fe-($-$$) db 0
 dw 0xaa55
 second_sector:
 
+[bits 16]
+disk_address_packet:
+  .size:        db 10h
+  .reserved:    db 0
+  .num_sectors: dw 10h
+  .buffer:      dw 0
+  .segment:     dw 0
+  .source_lba:  dq bootloader_sectors
+
+load_kernel_dbs:
+    pusha
+
+    mov bx, kernel_start_address >> 4
+    mov cx, kernel_sectors
+
+    ; === Point DS:SI at address packet ===
+    xor ax, ax
+    mov ds, ax
+    mov si, disk_address_packet
+
+  .loop:
+    mov word [disk_address_packet.segment], bx
+    add bx, 0x200
+
+    ; === Call BIOS extended read ===
+    mov dl, 0x80
+    mov ah, dbs_ext_read
+    mov al, 0
+
+    cld
+    int dbs
+    add word [disk_address_packet.source_lba], 0x10
+    sub cx, 0x10
+    jns .loop
+
+    popa
+    ret
+
 %include "long.asm"
 
 [bits 64]
@@ -208,7 +249,7 @@ long_mode_start:
     mov rbp, 0x1ff000
     mov rsp, rbp
 
-    call load_kernel
+    ; call load_kernel
 
     xor ebx, ebx
   .loop:
