@@ -36,7 +36,7 @@ Text_Flags :: enum_flags u32 {
 vesa: Vesa;
 
 vesa_init :: (boot_data: Boot_Data, font: Pnm) {
-    #if !ENABLE_VESA return;
+#if ENABLE_VESA {
 
     assert(font.type == .GRAYMAP);
 
@@ -58,9 +58,10 @@ vesa_init :: (boot_data: Boot_Data, font: Pnm) {
 
     set_color(theme.foreground);
 }
+}
 
 vesa_draw_frame :: () {
-    #if !ENABLE_VESA return;
+#if ENABLE_VESA {
 
     {
         top_left := 72 + 72 * VESA_WIDTH;
@@ -161,8 +162,10 @@ vesa_draw_frame :: () {
         vesa.old_cursor = vesa.cursor;
     }
 }
+}
 
 vesa_blit :: (image: Pnm) {
+#if ENABLE_VESA {
     assert(image.type == .PIXMAP);
     size := image.width * image.height;
 
@@ -177,6 +180,7 @@ vesa_blit :: (image: Pnm) {
         cursor += 3;
 
     }
+}
 }
 
 
@@ -470,7 +474,7 @@ welcome_screen :: () {
 
     get_attribute :: () -> u8 {
         if !USE_VGA return 0;
-        return cast(u8) theme.normal | (theme.background << 4);
+        return cast(u8) theme.primary | (theme.background << 4);
     }
 
     vertical_divide :: () {
@@ -495,9 +499,9 @@ welcome_screen :: () {
         text_cursor = margin;
     }
 
-    print :: (text: string, foreground: Vga_Color = 255) {
+    print :: (text: string, foreground: Color = 255) {
         if !USE_VGA return;
-        fg := ifx foreground == 255 then theme.normal else xx foreground;
+        fg := ifx foreground == 255 then theme.primary else xx foreground;
 
         for cast([] u8) text {
             if it == 10 {
@@ -521,7 +525,7 @@ welcome_screen :: () {
         }
     }
 
-    print :: (number: int, color: Vga_Color = 255) {
+    print :: (number: int, color: Color = 255) {
         if !USE_VGA return;
         c := color;
         if c == 255 c = theme.foreground;
@@ -547,7 +551,7 @@ welcome_screen :: () {
         }
     }
 
-    print_hex :: (number: $T, decorate := true) {
+    print_hex :: (number: $T, color: Color = 0, decorate := true) {
         if !USE_VGA return;
         #assert type_info(T).type == .INTEGER;
         size := #run type_info(T).runtime_size;
@@ -587,11 +591,11 @@ welcome_screen :: () {
     }
 
     theme: struct {
-        background : Vga_Color = .BLACK;
-        foreground : Vga_Color = .WHITE;
-        normal     : Vga_Color = .CYAN;
-        highlight  : Vga_Color = .LIGHT_CYAN;
-        accent     : Vga_Color = .RED;
+        background : Color = .BLACK;
+        foreground : Color = .WHITE;
+        primary    : Color = .CYAN;
+        highlight  : Color = .LIGHT_CYAN;
+        accent     : Color = .RED;
     }
 
     Vga_Register :: enum u16 {
@@ -645,7 +649,7 @@ welcome_screen :: () {
         port_write(xx ATTRIBUTE_ADDRESS, address);
     }
 
-    Vga_Color :: enum u8 {
+    Color :: enum u8 {
         BLACK         :: 0x00;
         BLUE          :: 0x01;
         GREEN         :: 0x02;

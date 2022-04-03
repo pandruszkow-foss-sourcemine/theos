@@ -25,14 +25,22 @@ isr_slot_0x% :: () #no_call {
         cli;
     }
 
+#if %2 {
     error_code: *u64;
+}
     stack_data: *Interrupt_Stack_Frame;
 
     #asm {
         mov stack:, rsp;
         add stack, 0x200;
+    }
+#if %2 {
+    #asm {
         mov error_code, stack;
         add stack, 0x8;
+    }
+}
+    #asm {
         mov stack_data, stack;
     }
 
@@ -49,7 +57,9 @@ isr_slot_0x% :: () #no_call {
         print("   FLAGS:  "); print_hex(stack_data.flags, theme.primary); print("\n");
         print("   SP:     "); print_hex(stack_data.sp, theme.primary);    print("\n");
         print("   SS:     "); print_hex(stack_data.ss, theme.primary);    print("\n");
+#if %2 {
         print("\n   Error code: "); print_hex(cast(u32) error_code, theme.primary);    print("\n");
+}
         #if ENABLE_VESA vesa_draw_frame();
     }
 
@@ -62,37 +72,46 @@ isr_slot_0x% :: () #no_call {
 }
 ISR;
 
-interrupts: [] struct { message: string; slot: int; } = .[
-    .{ "Division by zero",                 0x00 },
-    .{ "Debug exception",                  0x01 },
-    .{ "Non-maskable interrupt exception", 0x02 },
-    .{ "Breakpoint exception",             0x03 },
-    .{ "Overflow exception",               0x04 },
-    .{ "Bound range exceeded exception",   0x05 },
-    .{ "Invalid opcode exception",         0x06 },
-    .{ "Device not available exception",   0x07 },
-    .{ "Double Fault",                     0x08 },
-    .{ "Invalid TSS",                      0x0a },
-    .{ "Segment not present",              0x0b },
-    .{ "Stack segment fault",              0x0c },
-    .{ "General protection fault",         0x0d },
-//  .{ "Page fault",                       0x0e },
-    .{ "Floating point exception",         0x10 },
-    .{ "Alignment check fault",            0x11 },
-    .{ "Machine check fault",              0x12 },
-    .{ "SIMD Float exception fault",       0x13 },
-    .{ "Virtualization exception fault",   0x14 },
-    .{ "Security exception fault",         0x1e },
+interrupts: [] struct {
+    message: string;
+    slot: int;
+    has_error_code: bool;
+} = .[
+    .{ "Division by zero",                 0x00, false },
+    .{ "Debug exception",                  0x01, false },
+    .{ "Non-maskable interrupt exception", 0x02, false },
+    .{ "Breakpoint exception",             0x03, false },
+    .{ "Overflow exception",               0x04, false },
+    .{ "Bound range exceeded exception",   0x05, false },
+    .{ "Invalid opcode exception",         0x06, false },
+    .{ "Device not available exception",   0x07, false },
+    .{ "Double Fault",                     0x08, true  },
+    .{ "Invalid TSS",                      0x0a, true  },
+    .{ "Segment not present",              0x0b, true  },
+    .{ "Stack segment fault",              0x0c, true  },
+    .{ "General protection fault",         0x0d, true  },
+//  .{ "Page fault",                       0x0e, true  },
+    .{ "Floating point exception",         0x10, false },
+    .{ "Alignment check fault",            0x11, true  },
+    .{ "Machine check fault",              0x12, false },
+    .{ "SIMD Float exception fault",       0x13, false },
+    .{ "Virtualization exception fault",   0x14, false },
+    .{ "Control protection exception",     0x15, true  },
+    .{ "Security exception fault",         0x1e, true  },
 ];
 
 #run {
     set_build_options_dc(.{do_output = false});
     user_args, compiler_args := compiler_get_command_line_arguments();
+
+    make_iso: bool;
     for user_args {
         if it == "assemble" {
             assemble();
             return;
         }
+
+        if it == "iso" make_iso = true;
 
         #if OS == .WINDOWS if it == "generate_bindings" {
             generate_elf_bindings();
@@ -141,7 +160,7 @@ interrupts: [] struct { message: string; slot: int; } = .[
         {
             isr_code: String_Builder;
             for interrupts {
-                append(*isr_code, tprint(ISR_DECLARATION, formatInt(it.slot, base=16), it.message));
+                append(*isr_code, tprint(ISR_DECLARATION, formatInt(it.slot, base=16), it.has_error_code, it.message));
                 append(*isr_code, "\n");
             }
 
@@ -351,7 +370,6 @@ interrupts: [] struct { message: string; slot: int; } = .[
                 append(*generated_asm, tprint("    dd 0x%\t\t; Target address (VMA)\n", header.p_vaddr));
                 append(*generated_asm, tprint("    dd 0x%\t\t; Source address (LMA)\n", kernel_offset));
                 append(*generated_asm, tprint("    dd 0x%\t\t; Bytes to zero clear\n",  header.p_memsz));
-                assert(header.p_memsz % 4 == 0);
                 append(*generated_asm, tprint("    dd 0x%\t\t; Bytes to copy\n",        header.p_filesz));
 
                 // print("Header:\n%\n", << header);
@@ -381,7 +399,7 @@ interrupts: [] struct { message: string; slot: int; } = .[
 
     write_string("\n=== Creating Disk Image ===\n");
     {
-        DISK_SIZE :: 0xa00_000;
+        DISK_SIZE :: 0x16_8000;
         disk_image := cast(*u8) alloc(DISK_SIZE);
         cursor: int;
 
@@ -403,6 +421,12 @@ interrupts: [] struct { message: string; slot: int; } = .[
 
         cp_command := string.["cp", "theos", "theos.img"];
         os_run_command(.. cp_command, capture_and_return_output = true);
+    }
+
+    if make_iso {
+        write_string("\n=== Creating Optical Disk Image ===\n");
+        mkisofs_command := string.["mkisofs", "-o", "theos.iso", "-b", "theos.img", "."];
+        os_run_command(.. mkisofs_command);
     }
 }
 

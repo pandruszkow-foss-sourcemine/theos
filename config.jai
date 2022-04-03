@@ -1,5 +1,5 @@
 
-ENABLE_VESA :: true;
+ENABLE_VESA :: false;
 VESA_WIDTH :: 1024;
 VESA_HEIGHT :: 768;
 VESA_DEPTH :: 32;

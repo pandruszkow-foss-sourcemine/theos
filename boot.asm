@@ -127,7 +127,7 @@ start:
 %endif ; ENABLE_VESA
 
     call load_kernel_dbs
-    ; jmp $
+
     ; === Switch to Long Mode ===
     mov edi, page_table_address
     jmp SwitchToLongMode
@@ -199,7 +199,6 @@ write_hex:
   .char: db 0, 0
   .prefix: db '0x', 0
 
-
 times 0x1fe-($-$$) db 0
 dw 0xaa55
 second_sector:
@@ -229,7 +228,7 @@ load_kernel_dbs:
     add bx, 0x200
 
     ; === Call BIOS extended read ===
-    mov dl, 0x80
+    mov dl, [start.boot_drive]
     mov ah, dbs_ext_read
     mov al, 0
 
@@ -285,6 +284,7 @@ long_mode_start:
     jmp .loop
 
   .end:
+
     jmp kernel_entry_point
 
 load_kernel:

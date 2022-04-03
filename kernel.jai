@@ -1,5 +1,4 @@
 
-#import "Basic";
 #import "Machine_X64";
 #load "elf/elf.jai";
 #load "pci.jai";
@@ -16,7 +15,7 @@ boot_data: Boot_Data;
 
 #program_export
 kernel_entry :: () {
-    // dont();
+
     boot_data = << cast(*type_of(boot_data)) BOOT_DATA_AREA;
 
     idt_init();
@@ -31,6 +30,7 @@ kernel_entry :: () {
     buffer := map_memory(MAILBAG_SIZE);
 
     ata_read(buffer, MAILBAG_LOCATION, MAILBAG_SIZE);
+
     read_zip_file(buffer);
 
     font: Pnm;
@@ -53,27 +53,24 @@ kernel_entry :: () {
     vesa_init(boot_data, font);
 
     clear_screen();
-    // welcome_screen();
+    welcome_screen();
     vesa_draw_frame();
 
-    // pci_print_device_list();
     print("\n> ");
 
     vesa_draw_frame();
-    // hda := hda_discover();
-    // hda_init(hda);
 
     while true #asm { hlt; }
 }
 
-allocate :: (mode: Allocator_Mode, size: s64, old_size: s64, old_memory_pointer: *void, allocator_data: *void) -> *void {
+allocate :: (mode: Allocator_Mode, size: s64, old_size: s64, old_buffer: *void, user_data: *void) -> *void {
     if mode == .FREE {
         return ":-)".data;
     }
 
     if mode == .RESIZE {
         if size < old_size || size < 4096 {
-            return old_memory_pointer;
+            return old_buffer;
         }
     }
 
@@ -342,6 +339,8 @@ pic_init :: () {
     port_write(xx SLAVE_DATA, mask);
     port_write(xx SLAVE_DATA, 0xff);
 
+    pic_enable_irq(0x2);
+
     #asm { sti; }
 }
 
@@ -383,8 +382,11 @@ Cmos_Port :: enum u16 {
 
 Cmos_Register :: enum u8 {
     SECONDS          :: 0x00;
+    SECONDS_ALARM    :: 0x01;
     MINUTES          :: 0x02;
+    MINUTES_ALARM    :: 0x03;
     HOURS            :: 0x04;
+    HOURS_ALARM      :: 0x05;
     WEEKDAY          :: 0x06;
     DAY_OF_THE_MONTH :: 0x07;
     MONTH            :: 0x08;
@@ -395,10 +397,20 @@ Cmos_Register :: enum u8 {
     STATUS_REG_C     :: 0x0c;
 }
 
+Cmos_Status_B :: enum_flags u8 {
+    BCD_MODE                  :: 0x01;
+    _24H_CLOCK                :: 0x02;
+    INTERRUPT_UPDATE_COMPLETE :: 0x10;
+    INTERRUPT_ALARM           :: 0x20;
+    INTERRUPT_PERIODIC        :: 0x40;
+}
+
 cmos_init :: () {
+    using Cmos_Status_B;
+
     status := cmos_read(.STATUS_REG_B);
-    cmos_format.bcd_mode      = status & 0b10 > 0;
-    cmos_format.twenty_four_h = status & 0b01 > 0;
+    cmos_format.bcd_mode      = status & xx BCD_MODE   > 0;
+    cmos_format.twenty_four_h = status & xx _24H_CLOCK > 0;
 }
 
 cmos_read :: ($register: Cmos_Register) -> u8 {
@@ -415,6 +427,68 @@ cmos_read :: ($register: Cmos_Register) -> u8 {
     }
 
     return result;
+}
+
+cmos_write :: ($register: Cmos_Register, value: u8) {
+    using Cmos_Port;
+
+    port_write(xx ADDRESS, xx register);
+    io_delay();
+    port_write(xx DATA, value);
+}
+
+cmos_enable_irq :: (periodic: bool, alarm := false, update := false) {
+    using Cmos_Port;
+    using Cmos_Register;
+
+    idt_add_handler(xx cmos_irq_handler, 0x28);
+    pic_enable_irq(0x8);
+
+    #asm { cli; }
+    port_write(xx ADDRESS, xx STATUS_REG_B);
+    cmos_b := port_read(xx Cmos_Port.DATA);
+
+    using Cmos_Status_B;
+    if periodic  cmos_b |= xx INTERRUPT_PERIODIC;
+    if update    cmos_b |= xx INTERRUPT_UPDATE_COMPLETE;
+    if alarm     cmos_b |= xx INTERRUPT_ALARM;
+
+    port_write(xx ADDRESS, xx STATUS_REG_B);
+    port_write(xx DATA, xx cmos_b);
+
+    #asm { sti; }
+    cmos_read(.STATUS_REG_C);
+}
+
+cmos_set_frequency :: (rate: u16) {
+    using Cmos_Port;
+    using Cmos_Register;
+    assert((rate & 0xf) == rate);
+
+    #asm { cli; }
+    port_write(xx ADDRESS, xx STATUS_REG_A);
+    cmos_a := port_read(xx Cmos_Port.DATA);
+
+    port_write(xx ADDRESS, xx STATUS_REG_A);
+    port_write(xx DATA, xx cmos_a | rate);
+    #asm { sti; }
+}
+
+cmos_irq_handler_internal :: () #no_context {
+    PushAll();
+    push_context .{} {
+        cmos_read(.STATUS_REG_C);
+        print("This is not a test.\n");
+
+        pic_end_of_interrupt(0x8);
+    }
+    PopAll();
+}
+
+cmos_irq_handler :: () #no_call {
+    #asm { cli; }
+    cmos_irq_handler_internal();
+    #asm { sti; iret; }
 }
 
 print_cmos_datetime_string :: () -> string {
@@ -491,20 +565,22 @@ Page_Flags :: enum_flags u64 {
     EXECUTE_DISABLE :: 1 << 63;
 }
 
-VIRTUAL_MIRROR :: 0xffff_ff80_0000_0000;
+VIRTUAL_MIRROR : u64 : 0xffff_ffff_ffff_ffff - ONE_GB + 1;
 mirror_pdpt: [0x200] u64 #align 0x1000;
+mirror_pd:   [0x200] u64 #align 0x1000;
 
-ONE_GB :: 0x4000_0000;
+ONE_GB : u64 : 0x4000_0000;
 
 page_table_init :: () {
     using Page_Flags;
 
-    assert(check_feature(cpu.feature_leaves, .PDPE1GB), "For the present, this OS requires 1GB pages to be supported");
+    // assert(check_feature(cpu.feature_leaves, .PDPE1GB), "For the present, this OS requires 1GB pages to be supported");
 
-    pml4[0x1ff] = cast(u64) (xx mirror_pdpt.data) | PRESENT | READ_WRITE;
+    pml4[0x1ff]        = cast(u64) (xx mirror_pdpt.data) | PRESENT | READ_WRITE;
+    mirror_pdpt[0x1ff] = cast(u64) (xx mirror_pd.data)   | PRESENT | READ_WRITE;
     for 0..0x200-1 {
-        address := it * ONE_GB;
-        mirror_pdpt[it] = cast(u64) (xx address)  | PRESENT | READ_WRITE | PAGE_SIZE;
+        address := it * PAGE_TABLE_RANGE;
+        mirror_pd[it] = cast(u64) (xx address)  | PRESENT | READ_WRITE | PAGE_SIZE;
     }
 
     pml4[0]     = cast(u64) (xx pdpt.data)        | PRESENT | READ_WRITE;
@@ -540,12 +616,12 @@ get_or_create_page_table :: (table: *u64, entry: u64) -> *u64 {
 
     if table[entry] & xx PRESENT {
         phys := table[entry] & (~0xfff);
-        return xx (phys + VIRTUAL_MIRROR);
+        return xx (xx phys + VIRTUAL_MIRROR);
     }
 
     phys := get_new_page_frame();
     table[entry] = phys | xx PRESENT | READ_WRITE;
-    return cast(*u64) (phys + VIRTUAL_MIRROR);
+    return cast(*u64) (xx phys + VIRTUAL_MIRROR);
 }
 
 map_memory :: (size_bytes: int, virtual_address: u64 = xx,no_check -1, physical_address: u64 = xx,no_check -1, flags := Page_Flags.PRESENT | .READ_WRITE, loc := #caller_location) -> *void {
@@ -595,7 +671,7 @@ page_frame_watermark: int;
 get_new_page_frame :: (count: int = 1) -> u64 {
     address := page_frame_watermark * 0x1000 + PAGE_FRAME_BASE;
     page_frame_watermark += count;
-    memset(xx (address + VIRTUAL_MIRROR), 0, 0x1000);
+    memset(xx (xx address + VIRTUAL_MIRROR), 0, 0x1000);
     return xx address;
 }
 
@@ -647,8 +723,6 @@ get_physical_address :: (virtual_address: *void) -> u64, present: bool {
 }
 
 page_fault_handler :: () #no_call {
-    // PushAll();
-
     #asm {
         rsp: gpr === sp;
         sub rsp, 0x200;
@@ -666,8 +740,6 @@ page_fault_handler :: () #no_call {
         mov stack_data, stack;
     }
 
-    // vesa.cursor = 0;
-    // vesa.attribute_count = 0;
     push_context Context.{} {
         print("\n\nAn exception has occurred:  ");
         print("Page fault\n\n", theme.accent);
@@ -701,7 +773,6 @@ page_fault_handler :: () #no_call {
         sti;
     }
 
-    // PopAll();
     while true #asm { hlt; }
 }
 
