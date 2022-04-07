@@ -65,7 +65,7 @@ isr_slot_0x% :: () #no_call {
 
     #asm {
         add rsp, 0x200;
-        sti;
+        // sti;
     }
 
     while true #asm { hlt; }
@@ -136,6 +136,25 @@ interrupts: [] struct {
 
     write_string("\n=== Compiling Kernel ===\n");
     {
+        noptions: Nasm_Options;
+        noptions.outfile = ".build/interrupt.so";
+        noptions.format = .ELF64;
+        noptions.input_file_name = "interrupt.asm";
+        noptions.warnings |= .ALL;
+
+        success, error_code, stdout, stderr := run_nasm(noptions);
+
+        write_string(stdout);
+
+        if error_code {
+            write_string("\nAssembly error:\n");
+            write_string(stderr);
+            return;
+        } else {
+            write_string("Assembly success!\n");
+        }
+
+
         w := compiler_create_workspace("Kernel");
         options := get_build_options(w);
         options.output_executable_name = "kernel_elf";
@@ -193,7 +212,7 @@ interrupts: [] struct {
             reset(*register_pinnings);
             append(*register_pinnings, "PopAll :: () #expand {\n    #asm {\n");
             append(*register_pinnings, "        rsp: gpr === sp;\n");
-            for REGISTERS_TO_PUSH {
+            for < REGISTERS_TO_PUSH {
                 append(*register_pinnings, tprint("        r%: gpr === %1;\n", it));
                 append(*register_pinnings, tprint("        pop rsp, r%;\n", it));
             }
@@ -215,7 +234,7 @@ interrupts: [] struct {
         compiler_end_intercept(w);
 
         objdump_command := string.["objdump", "-x", ".build/kernel_elf", "-d"];
-        success, error_code, stdout, stderr := os_run_command(.. objdump_command, capture_and_return_output = true);
+        success, error_code, stdout, stderr = os_run_command(.. objdump_command, capture_and_return_output = true);
         if !success || error_code != 0 {
             write_string("objdump failed to run!\n");
         }

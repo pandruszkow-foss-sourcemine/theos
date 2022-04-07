@@ -472,7 +472,7 @@ welcome_screen :: () {
     text_cursor: int = 2;
     vga_screen :: cast(*u8) 0xb8000;
 
-    get_attribute :: () -> u8 {
+    get_attribute :: () -> u8 #c_call {
         if !USE_VGA return 0;
         return cast(u8) theme.primary | (theme.background << 4);
     }
@@ -499,7 +499,7 @@ welcome_screen :: () {
         text_cursor = margin;
     }
 
-    print :: (text: string, foreground: Color = 255) {
+    print :: (text: string, foreground: Color = 255) #c_call {
         if !USE_VGA return;
         fg := ifx foreground == 255 then theme.primary else xx foreground;
 
@@ -525,7 +525,7 @@ welcome_screen :: () {
         }
     }
 
-    print :: (number: int, color: Color = 255) {
+    print :: (number: int, color: Color = 255) #c_call {
         if !USE_VGA return;
         c := color;
         if c == 255 c = theme.foreground;
@@ -551,7 +551,7 @@ welcome_screen :: () {
         }
     }
 
-    print_hex :: (number: $T, color: Color = 0, decorate := true) {
+    print_hex :: (number: $T, color: Color = 0, decorate := true) #c_call {
         if !USE_VGA return;
         #assert type_info(T).type == .INTEGER;
         size := #run type_info(T).runtime_size;

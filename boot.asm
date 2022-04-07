@@ -25,6 +25,7 @@ stack:
 
 start:
     mov [.boot_drive], dl
+    mov byte [boot_data_area + 4], dl
 
     ; === Segment registers ===
     xor ax, ax

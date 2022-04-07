@@ -6,6 +6,7 @@ PCI_VENDOR_NO_DEVICE :: 0xffff;
 PCI_HEADER_TYPE_MULTIFUNCTION_BIT :: 0x80;
 
 Pci_Class_Code :: enum u8 {
+    UNCLASSIFIED             :: 0x0;
     MASS_STORAGE             :: 0x1;
     NETWORK                  :: 0x2;
     DISPLAY_DEVICE           :: 0x3;
@@ -202,17 +203,25 @@ pci_print_device_list :: () {
 
     ti := type_info(Pci_Class_Code);
 
-    print("|      Class      | Subclass |   Bus   |\n");
-    print("----------------------------------------\n", theme.foreground);
+    print("\n|      Class      |        Subclass        |   Bus   |\n");
+    print("------------------------------------------------------\n", theme.primary);
     for 0..pci_device_count - 1 {
         device_info := pci_device_info[it];
 
         print("| ");
-        name := ti.names[device_info.header.class_code - 1];
+        class := device_info.header.class_code;
+        name := ti.names[class];
         print(name);
         for 0..15 - name.count print(" ");
-        print("|     ");
-        print_hex(device_info.header.subclass);
+
+        print("| ");
+        subclass := device_info.header.subclass;
+        if subclass == 0x80 name = "Other";
+        else name = PCI_SUBCLASSES[class][subclass];
+
+        if name.count > 22 name.count = 22;
+        print(name);
+        for 0..21 - name.count print(" ");
 
         print(" |   ");
         print(device_info.bus);
@@ -222,6 +231,7 @@ pci_print_device_list :: () {
         print(device_info.function);
         print(" |\n");
     }
+    print("\n");
 }
 
 
@@ -340,3 +350,132 @@ hda_init :: (pci: Pci_Device_Info) {
         hda_set_bit(*hda, .RIRBCTL, 1);
     }
 }
+
+
+
+PCI_SUBCLASSES :: ([] string).[
+    .[
+        "Non VGA Compatible Unclassified",
+        "VGA Compatible Unclassified"
+    ],
+    .[
+        "SCSI Bus Controller",
+        "IDE Controller",
+        "Floppy Disk Controller",
+        "IPI Bus Controller",
+        "RAID Controller",
+        "ATA Controller",
+        "Serial ATA Controller",
+        "Serial Attached SCSI Controller",
+        "Non-Volatile Memory Controller",
+    ],
+    .[
+        "Ethernet Controller",
+        "Token Ring Controller",
+        "FFDI Controller",
+        "ATM Controller",
+        "ISDN Controller",
+        "WorldFip Controller",
+        "PICMG 2.14 Multi Computing Controller",
+        "Infiniband Controller",
+        "Fabric Controller",
+    ],
+    .[
+        "VGA Compatible Controller",
+        "XGA Controller",
+        "3D Controller",
+    ],
+    .[
+        "Multimedia Video Controller",
+        "Multimedia Audio Controller",
+        "Computer Telephony Device",
+        "Audio Device",
+    ],
+    .[
+        "RAM Controller",
+        "Flash Controller",
+    ],
+    .[
+        "Host Bridge",
+        "ISA Bridge",
+        "EISA Bridge",
+        "MCA Bridge",
+        "PCI-to-PCI Bridge",
+        "PCMCIA Bridge",
+        "NuBus Bridge",
+        "CardBus Bridge",
+        "RACEway Bridge",
+        "PCI-to-PCI Bridge (Semi Transparent)",
+        "InfiniBand-to-PCI Host Bridge",
+    ],
+    .[
+        "Serial Controller",
+        "Parallel Controller",
+        "Multiport Serial Controller",
+        "Modem",
+        "IEEE 488.1/2 (GPIB) Controller",
+        "Smart Card Controller",
+    ],
+    .[
+        "Programmable Interrupt Controller",
+        "DMA Controller",
+        "Timer",
+        "RTC Controller",
+        "PCI Hot-Plug Controller",
+        "SD Host Controller",
+        "IOMMU",
+    ],
+    .[
+        "Keyboard Controller",
+        "Digitizer Pen",
+        "Mouse Controller",
+        "Scanner Controller",
+        "Gameport Controller",
+    ],
+    .[
+        "Generic",
+    ],
+    .[
+        "386 Processor",
+        "486 Processor",
+        "Pentium",
+        "Pentium Pro",
+    ],
+    .[
+        "FireWire (IEEE 1394) Controller",
+        "ACCESS Bus Controller",
+        "SSA",
+        "USB Controller",
+        "Fibre Channel",
+        "SMBus Controller",
+        "InfiniBand Controller",
+        "IPMI Interface",
+        "SERCOS Interface (IEC 61491)",
+        "CANbus Controller",
+    ],
+    .[
+        "iRDA Compatible Controller",
+        "Consumer IR Controller",
+        "RF Controller",
+        "Bluetooth Controller",
+        "Broadband Controller",
+        "Ethernet Controller (802.1a)",
+        "Ethernet Controller (802.1b)",
+    ],
+    .[
+        "I20",
+    ],
+    .[
+        "Satellite TV Controller",
+        "Satellite Audio Controller",
+        "Satellite Voice Controller",
+        "Satellite Data Controller",
+    ],
+    .[
+        "Network and Computing Encryption/Decryption",
+    ],
+    .[
+        "DPIO Modules",
+        "Performance Counters",
+    ],            
+];

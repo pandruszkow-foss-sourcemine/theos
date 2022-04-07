@@ -10,12 +10,12 @@ cpu: Cpu_X86;
 
 Boot_Data :: struct {
     vesa_framebuffer: u32;
+    boot_drive_number: u8;
 }
 boot_data: Boot_Data;
 
 #program_export
 kernel_entry :: () {
-
     boot_data = << cast(*type_of(boot_data)) BOOT_DATA_AREA;
 
     idt_init();
@@ -27,12 +27,25 @@ kernel_entry :: () {
     page_table_init();
     enable_simd(cpu);
 
+    enable_ps2_keyboard();
+
+    pci_scan_all_devices();
+    pci_print_device_list();
+    print("Allocating buffer.\n");
     buffer := map_memory(MAILBAG_SIZE);
 
-    ata_read(buffer, MAILBAG_LOCATION, MAILBAG_SIZE);
+    print("Reading disk.\n");
+    ata_read(buffer, 0, 0x200);
 
+    text: string;
+    text.count = 0x200;
+    text.data = buffer;
+    print(text);
+
+    print("Decoding zip.\n");
     read_zip_file(buffer);
 
+    dont();
     font: Pnm;
     flower: Pnm;
     for 0..file_count - 1 {
@@ -48,8 +61,6 @@ kernel_entry :: () {
     }
 
     random_seed = xx rdtsc();
-    enable_ps2_keyboard();
-
     vesa_init(boot_data, font);
 
     clear_screen();
@@ -59,7 +70,6 @@ kernel_entry :: () {
     print("\n> ");
 
     vesa_draw_frame();
-
     while true #asm { hlt; }
 }
 
@@ -162,7 +172,7 @@ port_read :: (port: u16) -> u8 #no_context {
     return value;
 }
 
-io_delay :: () {
+io_delay :: () #no_context {
     #asm {
         zero: gpr === a;
         xor zero, zero;
@@ -197,8 +207,7 @@ enable_simd :: (cpu: Cpu_X86) {
     CR4_OSXMMEXCPT ::   1 << 10;
     CR4_OSXSAVE    ::   1 << 18;
 
-    supported := check_feature(cpu.feature_leaves, .SSE);
-    if supported #asm {
+    if check_feature(cpu.feature_leaves, .SSE) #asm {
         get_cr0 cr0:;
         and cr0, CR0_EM_CLEAR;
         or  cr0, CR0_MP;
@@ -223,6 +232,13 @@ enable_simd :: (cpu: Cpu_X86) {
         xgetbv xcr0_h:, xcr0_l:, index;
         or xcr0_l, 7;
         xsetbv xcr0_h, xcr0_l, index;
+    }
+}
+
+BochsBreak :: () #expand {
+    #asm {
+        bx: gpr === b;
+        xchg.w bx, bx;
     }
 }
 
@@ -254,7 +270,7 @@ idt_desc: struct {
 #assert(size_of(Idt_Entry)          == 16);
 #assert(size_of(type_of(idt_desc))  == 10);
 
-idt: [0x100] Idt_Entry;
+idt: [0x100] Idt_Entry #align 0x1000;
 
 idt_add_handler :: (address: *void, index: int) {
     _address := cast(u64) address;
@@ -277,7 +293,6 @@ idt_init :: () {
 
     register_generated_isrs();
     idt_add_handler(xx page_fault_handler, 0x0e);
-    idt_add_handler(xx syscall,            0x80);
 
     address := *idt_desc;
     #asm {
@@ -285,24 +300,13 @@ idt_init :: () {
     }
 }
 
-syscall :: () #no_call {
-    #asm {
-        cli;
-    }
+Interrupts :: #foreign_library,no_dll ".build/interrupt";
 
-    syscall_print :: () #c_call {
-        message := << cast(*string) (0x400_000 - size_of(string));
-        push_context .{} {
-            print(message);
-        }
-    }
+interrupt_wrapper :: () #c_call #foreign Interrupts;
 
-    syscall_print();
+#program_export
+handle_interrupt :: () #c_call {
 
-    #asm {
-        sti;
-        iret.q;
-    }
 }
 
 Pic_Port :: enum u16 {
@@ -317,25 +321,35 @@ Pic_Command :: enum u8 {
     END_OF_INTERRUPT :: 0x20;
 }
 
+PIC_BASE_OFFSET :: 0x20;
+
+PIC_ICW4_uPM  :: 0x1;
+PIC_ICW4_AEOI :: 0x2;
+PIC_ICW4_M_S  :: 0x4;
+PIC_ICW4_BUF  :: 0x8;
+PIC_ICW4_SFMN :: 0x10;
+
 pic_init :: () {
     using Pic_Port;
     using Pic_Command;
 
+    SLAVE_ADDRESS :: 0b0000_0100;
+
     mask: u8 = port_read(xx MASTER_CMD);
 
     port_write(xx MASTER_CMD, xx INITIALIZE);
-    port_write(xx MASTER_DATA, 0x20);
-    port_write(xx MASTER_DATA, 0x4);
-    port_write(xx MASTER_DATA, 1);
+    port_write(xx MASTER_DATA, PIC_BASE_OFFSET);
+    port_write(xx MASTER_DATA, SLAVE_ADDRESS);
+    port_write(xx MASTER_DATA, PIC_ICW4_uPM);
     port_write(xx MASTER_DATA, mask);
     port_write(xx MASTER_DATA, 0xff);
 
     mask = port_read(xx SLAVE_CMD);
 
     port_write(xx SLAVE_CMD, xx INITIALIZE);
-    port_write(xx SLAVE_DATA, 0x28);
+    port_write(xx SLAVE_DATA, PIC_BASE_OFFSET + 0x8);
     port_write(xx SLAVE_DATA, 0x2);
-    port_write(xx SLAVE_DATA, 1);
+    port_write(xx SLAVE_DATA, PIC_ICW4_uPM);
     port_write(xx SLAVE_DATA, mask);
     port_write(xx SLAVE_DATA, 0xff);
 
@@ -370,6 +384,13 @@ pic_end_of_interrupt :: (irq: u8) #c_call {
 
 
 
+pit_init :: () {
+    idt_add_handler(xx interrupt_wrapper, 0x20);
+    pic_enable_irq(0x0);
+}
+
+
+
 cmos_format: struct {
     bcd_mode: bool;
     twenty_four_h: bool;
@@ -398,8 +419,8 @@ Cmos_Register :: enum u8 {
 }
 
 Cmos_Status_B :: enum_flags u8 {
-    BCD_MODE                  :: 0x01;
-    _24H_CLOCK                :: 0x02;
+    _24H_CLOCK                :: 0x01;
+    BCD_MODE                  :: 0x02;
     INTERRUPT_UPDATE_COMPLETE :: 0x10;
     INTERRUPT_ALARM           :: 0x20;
     INTERRUPT_PERIODIC        :: 0x40;
@@ -407,13 +428,14 @@ Cmos_Status_B :: enum_flags u8 {
 
 cmos_init :: () {
     using Cmos_Status_B;
+    idt_add_handler(xx interrupt_wrapper, 0x28);
 
     status := cmos_read(.STATUS_REG_B);
     cmos_format.bcd_mode      = status & xx BCD_MODE   > 0;
     cmos_format.twenty_four_h = status & xx _24H_CLOCK > 0;
 }
 
-cmos_read :: ($register: Cmos_Register) -> u8 {
+cmos_read :: ($register: Cmos_Register) -> u8 #c_call {
     using Cmos_Port;
 
     port_write(xx ADDRESS, xx register);
@@ -441,11 +463,10 @@ cmos_enable_irq :: (periodic: bool, alarm := false, update := false) {
     using Cmos_Port;
     using Cmos_Register;
 
-    idt_add_handler(xx cmos_irq_handler, 0x28);
     pic_enable_irq(0x8);
 
     #asm { cli; }
-    port_write(xx ADDRESS, xx STATUS_REG_B);
+    port_write(xx ADDRESS, xx STATUS_REG_B | 0x80);
     cmos_b := port_read(xx Cmos_Port.DATA);
 
     using Cmos_Status_B;
@@ -453,42 +474,25 @@ cmos_enable_irq :: (periodic: bool, alarm := false, update := false) {
     if update    cmos_b |= xx INTERRUPT_UPDATE_COMPLETE;
     if alarm     cmos_b |= xx INTERRUPT_ALARM;
 
-    port_write(xx ADDRESS, xx STATUS_REG_B);
+    port_write(xx ADDRESS, xx STATUS_REG_B | 0x80);
     port_write(xx DATA, xx cmos_b);
 
     #asm { sti; }
     cmos_read(.STATUS_REG_C);
 }
 
-cmos_set_frequency :: (rate: u16) {
+cmos_set_frequency :: (rate: u8) {
     using Cmos_Port;
     using Cmos_Register;
     assert((rate & 0xf) == rate);
 
     #asm { cli; }
-    port_write(xx ADDRESS, xx STATUS_REG_A);
+    port_write(xx ADDRESS, xx STATUS_REG_A | 0x80);
     cmos_a := port_read(xx Cmos_Port.DATA);
 
-    port_write(xx ADDRESS, xx STATUS_REG_A);
-    port_write(xx DATA, xx cmos_a | rate);
+    port_write(xx ADDRESS, xx STATUS_REG_A | 0x80);
+    port_write(xx DATA, xx (cmos_a & 0xf0) | rate);
     #asm { sti; }
-}
-
-cmos_irq_handler_internal :: () #no_context {
-    PushAll();
-    push_context .{} {
-        cmos_read(.STATUS_REG_C);
-        print("This is not a test.\n");
-
-        pic_end_of_interrupt(0x8);
-    }
-    PopAll();
-}
-
-cmos_irq_handler :: () #no_call {
-    #asm { cli; }
-    cmos_irq_handler_internal();
-    #asm { sti; iret; }
 }
 
 print_cmos_datetime_string :: () -> string {
@@ -541,6 +545,22 @@ weekdays :: string.[
 
 
 
+timer_ticks_elapsed: u64;
+timer_ticks_target: u64;
+
+wait_for_seconds :: (seconds: float) {
+    timer_ticks_elapsed = 0;
+    timer_ticks_target = cast(u64) (seconds * 18.2065);
+
+    while true {
+        #asm { hlt; }
+        if timer_ticks_elapsed >= timer_ticks_target {
+            break;
+        }
+    }
+}
+
+
 
 IDENTITY_MAP_SIZE :: 0x400_000;
 PAGE_TABLE_RANGE :: 0x200_000;
@@ -580,11 +600,11 @@ page_table_init :: () {
     mirror_pdpt[0x1ff] = cast(u64) (xx mirror_pd.data)   | PRESENT | READ_WRITE;
     for 0..0x200-1 {
         address := it * PAGE_TABLE_RANGE;
-        mirror_pd[it] = cast(u64) (xx address)  | PRESENT | READ_WRITE | PAGE_SIZE;
+        mirror_pd[it] = cast(u64) (xx address) | PRESENT | READ_WRITE | PAGE_SIZE;
     }
 
-    pml4[0]     = cast(u64) (xx pdpt.data)        | PRESENT | READ_WRITE;
-    pdpt[0]     = cast(u64) (xx page_dir.data)    | PRESENT | READ_WRITE;
+    pml4[0] = cast(u64) (xx pdpt.data)     | PRESENT | READ_WRITE;
+    pdpt[0] = cast(u64) (xx page_dir.data) | PRESENT | READ_WRITE;
 
     page_tables_in_identity_map :: IDENTITY_MAP_SIZE / PAGE_TABLE_RANGE;
 
@@ -593,10 +613,10 @@ page_table_init :: () {
         table.data = page_tables[t].data;
         table.count = 0x200;
 
-        page_dir[t] = cast(u64) (xx table.data)   | PRESENT | READ_WRITE;
+        page_dir[t] = cast(u64) (xx table.data)  | PRESENT | READ_WRITE;
         for page: 0..0x200 - 1 {
             address := page * 0x1000 + t * PAGE_TABLE_RANGE;
-            table[page] = cast(u64) (xx address)  | PRESENT | READ_WRITE;
+            table[page] = cast(u64) (xx address) | PRESENT | READ_WRITE;
         }
     }
 
@@ -710,15 +730,20 @@ get_physical_address :: (virtual_address: *void) -> u64, present: bool {
     }
 
     pml4e := pml4[pml4_offset];
+
     pdpte := ReadTableEntry(pdpt_offset, pml4e);
     if pdpte & xx PAGE_SIZE {
         page_offset := x & 0x3fff_ffff;
         return (pdpte & ~0xfff) + page_offset, true;
     }
 
-    pde   := ReadTableEntry(pd\ _offset, pdpte);
-    pte   := ReadTableEntry(pt\ _offset, pde);
+    pde   := ReadTableEntry(pd_offset, pdpte);
+    if pde & xx PAGE_SIZE {
+        page_offset := x & 0x1f_ffff;
+        return (pde & ~0xfff) + page_offset, true;
+    }
 
+    pte   := ReadTableEntry(pt_offset, pde);
     return (pte & ~0xfff) + page_offset, true;
 }
 
@@ -769,8 +794,8 @@ page_fault_handler :: () #no_call {
     }
 
     #asm {
-        add rsp, 0x200;
         sti;
+        add rsp, 0x200;
     }
 
     while true #asm { hlt; }
@@ -790,6 +815,7 @@ Ata_Status :: enum_flags u8 {
 }
 
 Ata_Error :: enum_flags {
+    NONE                   :: 0x0;
     ADDRESS_MARK_NOT_FOUND :: 0x1;
     TRACK_ZERO_NOT_FOUND   :: 0x2;
     ABORTED                :: 0x4;
@@ -801,17 +827,17 @@ Ata_Error :: enum_flags {
 }
 
 Ata_Port :: enum u16 {
-    DATA          :: 0x1f0;
-    FEATURE       :: 0x1f1;
-    SECTOR_COUNT  :: 0x1f2;
-    LBA_LOW       :: 0x1f3;
-    LBA_MID       :: 0x1f4;
-    LBA_HIGH      :: 0x1f5;
-    DRIVE_HEADER  :: 0x1f6;
-    COMMAND       :: 0x1f7;
+    DATA          :: 0x170;
+    FEATURE       :: 0x171;
+    SECTOR_COUNT  :: 0x172;
+    LBA_LOW       :: 0x173;
+    LBA_MID       :: 0x174;
+    LBA_HIGH      :: 0x175;
+    DRIVE_HEADER  :: 0x176;
+    COMMAND       :: 0x177;
 
-    IN_ERROR  :: 0x1f1;
-    IN_STATUS :: 0x1f7;
+    IN_ERROR  :: 0x171;
+    IN_STATUS :: 0x177;
 }
 
 Ata_Command :: enum u8 {

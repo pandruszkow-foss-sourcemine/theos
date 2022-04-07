@@ -4,3 +4,4 @@ boot: c
 vga: update_freq=60
 plugin_ctrl: unmapped=0, es1370=1
 cpuid: 1g_pages=1, misaligned_sse=1
+magic_break: enabled=1
