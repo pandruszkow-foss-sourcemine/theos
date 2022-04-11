@@ -1,4 +1,6 @@
 
+Basic :: #import "Basic";
+
 #import "Machine_X64";
 #load "elf/elf.jai";
 #load "pci.jai";
@@ -16,64 +18,54 @@ boot_data: Boot_Data;
 
 #program_export
 kernel_entry :: () {
-    boot_data = << cast(*type_of(boot_data)) BOOT_DATA_AREA;
+    kernel_context: Context;
+    kernel_context.allocator.proc = allocate_memory;
+    kernel_context.logger = log;
 
-    idt_init();
-    pic_init();
-    cmos_init();
+    push_context kernel_context {
+        boot_data = << cast(*type_of(boot_data)) BOOT_DATA_AREA;
 
-    context.allocator.proc = allocate;
-    cpu = get_cpu_info();
-    page_table_init();
-    enable_simd(cpu);
+        idt_init();
+        pic_init();
+        cmos_init();
 
-    enable_ps2_keyboard();
+        cpu = get_cpu_info();
+        page_table_init();
+        enable_simd(cpu);
+        enable_ps2_keyboard();
 
-    pci_scan_all_devices();
-    pci_print_device_list();
-    print("Allocating buffer.\n");
-    buffer := map_memory(MAILBAG_SIZE);
+        buffer := map_memory(MAILBAG_SIZE);
 
-    print("Reading disk.\n");
-    ata_read(buffer, 0, 0x200);
+        // ata_read(buffer, 0x1d0_000, MAILBAG_SIZE);
 
-    text: string;
-    text.count = 0x200;
-    text.data = buffer;
-    print(text);
+        read_zip_file(xx 0x1d0_000);
 
-    print("Decoding zip.\n");
-    read_zip_file(buffer);
+        font: Pnm;
+        flower: Pnm;
+        for 0..file_count - 1 {
+            file := files[it];
 
-    dont();
-    font: Pnm;
-    flower: Pnm;
-    for 0..file_count - 1 {
-        file := files[it];
+            if file.name == "font.pgm" {
+                font = parse_pnm(file.data);
+            }
 
-        if file.name == "font.pgm" {
-            font = parse_pnm(file.data);
+            if file.name == "plant.ppm" {
+                flower = parse_pnm(file.data);
+            }
         }
 
-        if file.name == "plant.ppm" {
-            flower = parse_pnm(file.data);
-        }
+        random_seed = xx rdtsc();
+        vesa_init(boot_data, font);
+
+        clear_screen();
+        print("\n> ");
+        vesa_draw_frame();
+
+        while true #asm { hlt; }
     }
-
-    random_seed = xx rdtsc();
-    vesa_init(boot_data, font);
-
-    clear_screen();
-    welcome_screen();
-    vesa_draw_frame();
-
-    print("\n> ");
-
-    vesa_draw_frame();
-    while true #asm { hlt; }
 }
 
-allocate :: (mode: Allocator_Mode, size: s64, old_size: s64, old_buffer: *void, user_data: *void) -> *void {
+allocate_memory :: (mode: Allocator_Mode, size: s64, old_size: s64, old_buffer: *void, user_data: *void) -> *void {
     if mode == .FREE {
         return ":-)".data;
     }
@@ -87,6 +79,10 @@ allocate :: (mode: Allocator_Mode, size: s64, old_size: s64, old_buffer: *void, 
     return map_memory(size);
 }
 
+log :: (message: string, data: *void, info: Log_Info) {
+    print(message);
+}
+
 crt_memset :: (target: *u8, value: s32, count: u64) -> *void #c_call {
     for 0..count-1 {
         target[it] = cast(u8) value;
@@ -94,9 +90,18 @@ crt_memset :: (target: *u8, value: s32, count: u64) -> *void #c_call {
     return target;
 }
 
-crt_memcpy :: (dest: *u8, src: *u8, count: u64) -> *void #c_call {
-    for 0..count-1 {
-        dest[it] = src[it];
+crt_memcpy :: (dest: *u8, src: *u8, $$ count: u64) -> *void #c_call {
+    if count % 8 == 0 {
+        dest64: *u64 = xx dest;
+        src64:  *u64 = xx src;
+
+        for 0..count / 8 - 1 {
+            dest64[it] = src64[it];
+        }
+    } else {
+        for 0..count - 1 {
+            dest[it] = src[it];
+        }
     }
     return dest;
 }
@@ -154,7 +159,9 @@ in :: (port: u16, $T: Type = u32) -> T {
     return value;
 }
 
-port_write :: (port: u16, value: u8) #no_context {
+port_write :: (_port: $P, _value: $V) #no_context {
+    port  := cast(u16) _port;
+    value := cast(u8)  _value;
     #asm {
         port  === d;
         value === a;
@@ -162,7 +169,8 @@ port_write :: (port: u16, value: u8) #no_context {
     }
 }
 
-port_read :: (port: u16) -> u8 #no_context {
+port_read :: (_port: $P) -> u8 #no_context {
+    port := cast(u16) _port;
     value: u8;
     #asm {
         port  === d;
@@ -219,6 +227,7 @@ enable_simd :: (cpu: Cpu_X86) {
         set_cr4 cr4;
     }
 
+    return;
     if check_feature(cpu.feature_leaves, .OSXSAVE) #asm {
         get_cr4 cr4:;
         or  cr4, CR4_OSXSAVE;
@@ -293,6 +302,7 @@ idt_init :: () {
 
     register_generated_isrs();
     idt_add_handler(xx page_fault_handler, 0x0e);
+    idt_add_handler(xx syscall,            0x80);
 
     address := *idt_desc;
     #asm {
@@ -306,7 +316,27 @@ interrupt_wrapper :: () #c_call #foreign Interrupts;
 
 #program_export
 handle_interrupt :: () #c_call {
+    timer_ticks_elapsed += 10000;
+}
 
+syscall :: () #no_call {
+    #asm {
+        cli;
+    }
+
+    syscall_print :: () #c_call {
+        message := << cast(*string) (0x400_000 - size_of(string));
+        push_context .{} {
+            print(message);
+        }
+    }
+
+    syscall_print();
+
+    #asm {
+        sti;
+        iret.q;
+    }
 }
 
 Pic_Port :: enum u16 {
@@ -329,29 +359,39 @@ PIC_ICW4_M_S  :: 0x4;
 PIC_ICW4_BUF  :: 0x8;
 PIC_ICW4_SFMN :: 0x10;
 
+pic_end_of_interrupt :: (irq: u8) #c_call {
+    using Pic_Port;
+    using Pic_Command;
+
+    if irq >= 8 {
+        port_write(SLAVE_CMD, END_OF_INTERRUPT);
+    }
+    port_write(MASTER_CMD, END_OF_INTERRUPT);
+}
+
 pic_init :: () {
     using Pic_Port;
     using Pic_Command;
 
     SLAVE_ADDRESS :: 0b0000_0100;
 
-    mask: u8 = port_read(xx MASTER_CMD);
+    mask: u8 = port_read(MASTER_CMD);
 
-    port_write(xx MASTER_CMD, xx INITIALIZE);
-    port_write(xx MASTER_DATA, PIC_BASE_OFFSET);
-    port_write(xx MASTER_DATA, SLAVE_ADDRESS);
-    port_write(xx MASTER_DATA, PIC_ICW4_uPM);
-    port_write(xx MASTER_DATA, mask);
-    port_write(xx MASTER_DATA, 0xff);
+    port_write(MASTER_CMD,  INITIALIZE);
+    port_write(MASTER_DATA, PIC_BASE_OFFSET);
+    port_write(MASTER_DATA, SLAVE_ADDRESS);
+    port_write(MASTER_DATA, PIC_ICW4_uPM);
+    port_write(MASTER_DATA, mask);
+    port_write(MASTER_DATA, 0xff);
 
-    mask = port_read(xx SLAVE_CMD);
+    mask = port_read(SLAVE_CMD);
 
-    port_write(xx SLAVE_CMD, xx INITIALIZE);
-    port_write(xx SLAVE_DATA, PIC_BASE_OFFSET + 0x8);
-    port_write(xx SLAVE_DATA, 0x2);
-    port_write(xx SLAVE_DATA, PIC_ICW4_uPM);
-    port_write(xx SLAVE_DATA, mask);
-    port_write(xx SLAVE_DATA, 0xff);
+    port_write(SLAVE_CMD,  INITIALIZE);
+    port_write(SLAVE_DATA, PIC_BASE_OFFSET + 0x8);
+    port_write(SLAVE_DATA, 0x2);
+    port_write(SLAVE_DATA, PIC_ICW4_uPM);
+    port_write(SLAVE_DATA, mask);
+    port_write(SLAVE_DATA, 0xff);
 
     pic_enable_irq(0x2);
 
@@ -360,28 +400,17 @@ pic_init :: () {
 
 pic_enable_irq :: (irq: u8) {
     using Pic_Port;
-    port: u8 = xx MASTER_DATA;
+    port := MASTER_DATA;
 
     if irq >= 8 {
         irq -= 8;
-        port = xx SLAVE_DATA;
+        port = SLAVE_DATA;
     }
 
     mask:  u8 = xx ~(1 << irq);
     value: u8 = port_read(port) & mask;
     port_write(port, value);
 }
-
-pic_end_of_interrupt :: (irq: u8) #c_call {
-    using Pic_Port;
-    using Pic_Command;
-
-    if irq >= 8 {
-        port_write(xx SLAVE_CMD, xx END_OF_INTERRUPT);
-    }
-    port_write(xx MASTER_CMD, xx END_OF_INTERRUPT);
-}
-
 
 
 pit_init :: () {
@@ -438,9 +467,9 @@ cmos_init :: () {
 cmos_read :: ($register: Cmos_Register) -> u8 #c_call {
     using Cmos_Port;
 
-    port_write(xx ADDRESS, xx register);
+    port_write(ADDRESS, register);
     io_delay();
-    result := port_read(xx DATA);
+    result := port_read(DATA);
 
     #if register < .STATUS_REG_A {
         if cmos_format.bcd_mode {
@@ -454,9 +483,9 @@ cmos_read :: ($register: Cmos_Register) -> u8 #c_call {
 cmos_write :: ($register: Cmos_Register, value: u8) {
     using Cmos_Port;
 
-    port_write(xx ADDRESS, xx register);
+    port_write(ADDRESS, register);
     io_delay();
-    port_write(xx DATA, value);
+    port_write(DATA, value);
 }
 
 cmos_enable_irq :: (periodic: bool, alarm := false, update := false) {
@@ -466,16 +495,16 @@ cmos_enable_irq :: (periodic: bool, alarm := false, update := false) {
     pic_enable_irq(0x8);
 
     #asm { cli; }
-    port_write(xx ADDRESS, xx STATUS_REG_B | 0x80);
-    cmos_b := port_read(xx Cmos_Port.DATA);
+    port_write(ADDRESS, STATUS_REG_B | 0x80);
+    cmos_b := port_read(Cmos_Port.DATA);
 
     using Cmos_Status_B;
     if periodic  cmos_b |= xx INTERRUPT_PERIODIC;
     if update    cmos_b |= xx INTERRUPT_UPDATE_COMPLETE;
     if alarm     cmos_b |= xx INTERRUPT_ALARM;
 
-    port_write(xx ADDRESS, xx STATUS_REG_B | 0x80);
-    port_write(xx DATA, xx cmos_b);
+    port_write(ADDRESS, STATUS_REG_B | 0x80);
+    port_write(DATA, cmos_b);
 
     #asm { sti; }
     cmos_read(.STATUS_REG_C);
@@ -487,35 +516,25 @@ cmos_set_frequency :: (rate: u8) {
     assert((rate & 0xf) == rate);
 
     #asm { cli; }
-    port_write(xx ADDRESS, xx STATUS_REG_A | 0x80);
-    cmos_a := port_read(xx Cmos_Port.DATA);
+    port_write(ADDRESS, STATUS_REG_A | 0x80);
+    cmos_a := port_read(Cmos_Port.DATA);
 
-    port_write(xx ADDRESS, xx STATUS_REG_A | 0x80);
-    port_write(xx DATA, xx (cmos_a & 0xf0) | rate);
+    port_write(ADDRESS, STATUS_REG_A | 0x80);
+    port_write(DATA, (cmos_a & 0xf0) | rate);
     #asm { sti; }
 }
 
-print_cmos_datetime_string :: () -> string {
-    print(weekdays[cmos_read(.WEEKDAY) - 1]);
-    print(" ");
-    print(months[cmos_read(.MONTH) - 1]);
-    print(" ");
-    print(cmos_read(.DAY_OF_THE_MONTH));
-    print(", ");
-    print(cmos_read(.YEAR) + 2000);
-    print(", ");
+get_cmos_datetime_string :: () -> string {
+    weekday := weekdays[cmos_read(.WEEKDAY) - 1];
+    month   := months[cmos_read(.MONTH) - 1];
+    day     := cmos_read(.DAY_OF_THE_MONTH);
+    year    := cmos_read(.YEAR) + 2000;
 
-    hours := cmos_read(.HOURS);
-    if hours < 10 print("0"); print(hours);
-    print(":");
-
+    hours   := cmos_read(.HOURS);
     minutes := cmos_read(.MINUTES);
-    if minutes < 10 print("0"); print(minutes);
-    print(":");
-
     seconds := cmos_read(.SECONDS);
-    if seconds < 10 print("0"); print(seconds);
-    print(".\n");
+
+    return Basic.sprint("% % %, %, %:%:%", weekday, month, day, year, hours, minutes, seconds);
 }
 
 months :: string.[
@@ -594,8 +613,6 @@ ONE_GB : u64 : 0x4000_0000;
 page_table_init :: () {
     using Page_Flags;
 
-    // assert(check_feature(cpu.feature_leaves, .PDPE1GB), "For the present, this OS requires 1GB pages to be supported");
-
     pml4[0x1ff]        = cast(u64) (xx mirror_pdpt.data) | PRESENT | READ_WRITE;
     mirror_pdpt[0x1ff] = cast(u64) (xx mirror_pd.data)   | PRESENT | READ_WRITE;
     for 0..0x200-1 {
@@ -628,6 +645,17 @@ page_table_init :: () {
         set_cr4 cr4;
 
         set_cr3 pml4_base;
+    }
+
+    IA32_PAT :: 0x277;
+    mask: u64 = ~0xf;
+    #asm {
+        msr_name: gpr === c;
+        mov msr_name, IA32_PAT;
+        rdmsr high:, low:, msr_name;
+        and high, mask;
+        or high, 0x1;
+        wrmsr high, low, msr_name;
     }
 }
 
@@ -733,6 +761,7 @@ get_physical_address :: (virtual_address: *void) -> u64, present: bool {
 
     pdpte := ReadTableEntry(pdpt_offset, pml4e);
     if pdpte & xx PAGE_SIZE {
+        assert(check_feature(cpu.feature_leaves, .PDPE1GB));
         page_offset := x & 0x3fff_ffff;
         return (pdpte & ~0xfff) + page_offset, true;
     }
@@ -827,22 +856,25 @@ Ata_Error :: enum_flags {
 }
 
 Ata_Port :: enum u16 {
-    DATA          :: 0x170;
-    FEATURE       :: 0x171;
-    SECTOR_COUNT  :: 0x172;
-    LBA_LOW       :: 0x173;
-    LBA_MID       :: 0x174;
-    LBA_HIGH      :: 0x175;
-    DRIVE_HEADER  :: 0x176;
-    COMMAND       :: 0x177;
+    DATA          :: 0x1f0;
+    FEATURE       :: 0x1f1;
+    SECTOR_COUNT  :: 0x1f2;
+    LBA_LOW       :: 0x1f3;
+    LBA_MID       :: 0x1f4;
+    LBA_HIGH      :: 0x1f5;
+    DRIVE_SELECT  :: 0x1f6;
+    COMMAND       :: 0x1f7;
+    CONTROL       :: 0x3f6;
 
-    IN_ERROR  :: 0x171;
-    IN_STATUS :: 0x177;
+    IN_ERROR  :: 0x1f1;
+    IN_STATUS :: 0x1f7;
+
 }
 
 Ata_Command :: enum u8 {
-    READ    :: 0x20;
-    WRITE   :: 0x30;
+    READ     :: 0x20;
+    WRITE    :: 0x30;
+    IDENTIFY :: 0xec;
 }
 
 ata_await_transfer_request :: () {
@@ -867,22 +899,22 @@ ata_get_error :: () -> Ata_Error {
 }
 
 ata_pio_start :: (start_sector: u32, sector_count: u8) {
-    LBA_MODE :: 0b11100000;
-
     using Ata_Port;
-    port_write(xx DRIVE_HEADER, cast(u8) (start_sector >> 24) | LBA_MODE);
-    port_write(xx SECTOR_COUNT, sector_count);
 
-    port_write(xx LBA_LOW,  cast(u8) (start_sector));
-    port_write(xx LBA_MID,  cast(u8) (start_sector >> 8));
-    port_write(xx LBA_HIGH, cast(u8) (start_sector >> 16));
+    port_write(DRIVE_SELECT, cast(u8) (start_sector >> 24) | 0xE0);
+    port_write(FEATURE, 0x00);
+    port_write(SECTOR_COUNT, sector_count);
+
+    port_write(LBA_LOW,  cast(u8) (start_sector));
+    port_write(LBA_MID,  cast(u8) (start_sector >> 8));
+    port_write(LBA_HIGH, cast(u8) (start_sector >> 16));
 }
 
 ata_pio_read :: (buffer: *u16, start_sector: u32, sector_count: u8) -> Ata_Error {
     using Ata_Port;
 
     ata_pio_start(start_sector, sector_count);
-    port_write(xx COMMAND, xx Ata_Command.READ);
+    port_write(COMMAND, Ata_Command.READ);
 
     count := ifx sector_count == 0 then 256 else sector_count;
     for sector: 0..count - 1 {
@@ -915,7 +947,7 @@ ata_pio_write :: (buffer: *u16, start_sector: u32, sector_count: u8) -> Ata_Erro
     using Ata_Port;
 
     ata_pio_start(start_sector, sector_count);
-    port_write(xx COMMAND, xx Ata_Command.WRITE);
+    port_write(COMMAND, Ata_Command.WRITE);
 
     count := ifx sector_count == 0 then 256 else sector_count;
     for sector: 0..count - 1 {

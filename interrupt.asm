@@ -1,8 +1,8 @@
 
 section .text
 
-extern handle_interrupt
 [bits 64]
+extern handle_interrupt
 
 %macro push_all 0
     push rax
@@ -40,15 +40,22 @@ extern handle_interrupt
     pop rax
 %endmacro
 
-align 16
 global interrupt_wrapper
+align 16
 interrupt_wrapper:
     cli
-    cld
-    xchg bx, bx
-    push_all
-    call handle_interrupt
-    pop_all
-    xchg bx, bx
-    sti
+    push rax
+    ; === Read status register C ===
+    mov al, 0x0c
+    out 0x70, al
+    in al, 0x71
+
+    ; call handle_interrupt
+
+    ; === Send EOI ===
+    mov al, 0x20
+    out 0xa0, al
+    out 0x20, al
+
+    pop rax
     iretq

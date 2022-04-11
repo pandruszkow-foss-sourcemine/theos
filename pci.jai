@@ -165,12 +165,6 @@ pci_write_config_register :: (info: Pci_Device_Info, reg_index: u32, value: u32)
     out(xx CONFIG_DATA, value);
 }
 
-Pci_Base_Address_Type :: enum {
-    MEMORY_32;
-    MEMORY_64;
-    IO;
-}
-
 pci_get_base_address :: (info: Pci_Device_Info, bar: u32) -> base: u64, limit: u32, io_space: bool {
     assert(info.header.header_type != 0x2);
 
@@ -203,20 +197,22 @@ pci_print_device_list :: () {
 
     ti := type_info(Pci_Class_Code);
 
-    print("\n|      Class      |        Subclass        |   Bus   |\n");
-    print("------------------------------------------------------\n", theme.primary);
+    print("|        Class        |        Subclass        |   Bus   |\n");
+    print("----------------------------------------------------------\n");
     for 0..pci_device_count - 1 {
         device_info := pci_device_info[it];
 
         print("| ");
         class := device_info.header.class_code;
+        if class > 0x11 print("What?\n");
+
         name := ti.names[class];
         print(name);
-        for 0..15 - name.count print(" ");
+        for 0..19 - name.count print(" ");
 
         print("| ");
         subclass := device_info.header.subclass;
-        if subclass == 0x80 name = "Other";
+        if subclass >= 0x10 name = "Other";
         else name = PCI_SUBCLASSES[class][subclass];
 
         if name.count > 22 name.count = 22;
@@ -231,7 +227,6 @@ pci_print_device_list :: () {
         print(device_info.function);
         print(" |\n");
     }
-    print("\n");
 }
 
 

@@ -44,12 +44,16 @@ start:
     ; === Load the rest of the bootloader ===
     mov ah, dbs_read
     mov al, bootloader_sectors - 1
-    mov cl, 2
-    mov ch, 0
+    mov cx, 2
     mov dh, 0
     mov dl, [.boot_drive]
     mov bx, second_sector
+
     int dbs
+
+    xor bx, bx
+    mov bl, ah
+    call write_hex
 
     ; === Write string ===
     mov bx, .greeting
@@ -134,11 +138,12 @@ start:
     jmp SwitchToLongMode
 
   .greeting: db 'Hello, sailor', 0xa, 0xd, 0
+  .msg_b: db 'Loading kernel', 0xa, 0xd, 0
+  .msg_c: db 'Switching to long mode', 0xa, 0xd, 0
 
 %if ENABLE_VESA
   .vesa_fail: db '  No appropriate VESA mode was found, or VESA is not supported.', 0xa, 0xd, 0
 %endif
-
   .boot_drive: db 0
   .space: db ' ', 0
 
@@ -200,6 +205,15 @@ write_hex:
   .char: db 0, 0
   .prefix: db '0x', 0
 
+; === Fake partition table ===
+; times 0x1b8-($-$$) db 0
+; 
+; dd 0x89abcdef
+; dw 0x0
+; 
+; db 0x00, 0x01, 0x01, 0x00, 0x06, 0x3f, 0x3f, 0xc4
+; db 0x3f, 0x00, 0x00, 0x00, 0x81, 0x1e, 0x0c, 0x00
+
 times 0x1fe-($-$$) db 0
 dw 0xaa55
 second_sector:
@@ -249,8 +263,14 @@ long_mode_start:
     mov rbp, 0x1ff000
     mov rsp, rbp
 
-    ; call load_kernel
+    mov ecx, 0x100000
+  .clear_loop:
+    mov byte [ecx], 0
+    inc ecx
+    cmp ecx, 0x200000
+    jne .clear_loop
 
+    cld
     xor ebx, ebx
   .loop:
     cmp dword ebx, [kernel_section_table.count]
@@ -272,7 +292,7 @@ long_mode_start:
     push rdi
 
     xor eax, eax
-    rep stosb
+    ; rep stosb
 
     pop rdi
     pop rax
@@ -285,7 +305,6 @@ long_mode_start:
     jmp .loop
 
   .end:
-
     jmp kernel_entry_point
 
 load_kernel:

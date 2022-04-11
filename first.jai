@@ -46,7 +46,7 @@ isr_slot_0x% :: () #no_call {
 
     c: Context;
     push_context c {
-        clear_screen();
+        // clear_screen();
 
         print("\n\n   An exception has occurred:  ", theme.primary);
         print("%\n", theme.accent);
@@ -126,7 +126,7 @@ interrupts: [] struct {
     zip := read_entire_file("the_mailbag.zip");
 
     BOOTLOADER_SECTOR_COUNT :: 5;
-    BOOT_DATA_AREA          :: 0x8000;
+    BOOT_DATA_AREA          :: 0x9000;
     BOOT_DATA_SIZE          :: 0x1000;
 
     PAGE_TABLE_ADDRESS      :: BOOT_DATA_AREA + BOOT_DATA_SIZE;
@@ -233,7 +233,7 @@ interrupts: [] struct {
         }
         compiler_end_intercept(w);
 
-        objdump_command := string.["objdump", "-x", ".build/kernel_elf", "-d"];
+        objdump_command := string.["objdump", "-x", ".build/kernel_elf", "-d", "-M", "intel"];
         success, error_code, stdout, stderr = os_run_command(.. objdump_command, capture_and_return_output = true);
         if !success || error_code != 0 {
             write_string("objdump failed to run!\n");
@@ -396,6 +396,15 @@ interrupts: [] struct {
                 append(*kernel_binary, elf.data + header.p_offset, xx header.p_filesz);
                 kernel_offset += xx header.p_filesz;
             }
+
+            section_count += 1;
+            append(*generated_asm, tprint("  .section_%:\n", section_count));
+            append(*generated_asm, tprint("    dd 0x%\t\t; Target address (VMA)\n", 0x1d0_000));
+            append(*generated_asm, tprint("    dd 0x%\t\t; Source address (LMA)\n", kernel_offset));
+            append(*generated_asm, tprint("    dd 0x%\t\t; Bytes to zero clear\n",  zip.count));
+            append(*generated_asm, tprint("    dd 0x%\t\t; Bytes to copy\n",        zip.count));
+
+            append(*kernel_binary, zip.data, zip.count);
 
             kernel_size := builder_string_length(*kernel_binary);
             write_entire_file(".build/kernel.bin", builder_to_string(*kernel_binary));

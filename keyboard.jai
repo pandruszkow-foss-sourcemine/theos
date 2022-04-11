@@ -9,7 +9,11 @@ keyboard_state: struct {
 
 kbd :: () #c_call {
     PushAll();
-    push_context .{} {
+    kernel_context: Context;
+    kernel_context.allocator.proc = allocate_memory;
+    kernel_context.logger = log;
+
+    push_context kernel_context {
         defer pic_end_of_interrupt(0x1);
 
         key := port_read(0x60);
@@ -87,6 +91,8 @@ run_command :: (command_string: string) {
         print("\n");
         print_file_list();
         print("\n");
+      case "wait";
+        wait_for_seconds(1);
       case "fs.read";
         filename: string;
         filename.count = command_string.count - name.count - 1;
@@ -99,7 +105,9 @@ run_command :: (command_string: string) {
                     content.data = file.data;
                     content.count = file.size;
                 if file.type == .TEXT {
+                    print("\n");
                     print(content);
+                    print("\n");
                 } else {
                     vesa_blit(parse_pnm(content.data));
                 }
@@ -107,7 +115,9 @@ run_command :: (command_string: string) {
             }
         }
       case "time";
-        print_cmos_datetime_string();
+        print("\n");
+        print(get_cmos_datetime_string());
+        print(".\n\n");
       case "exec";
         for 0..file_count - 1 {
             file := files[it];

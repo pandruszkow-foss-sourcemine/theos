@@ -3,6 +3,7 @@ USE_VGA :: !ENABLE_VESA;
 
 Vesa :: struct {
     framebuffer: *u32;
+    offscreen_buffer: *u32;
     buffer_size: int;
     pixels: int;
 
@@ -42,7 +43,10 @@ vesa_init :: (boot_data: Boot_Data, font: Pnm) {
 
     vesa.pixels = VESA_WIDTH * VESA_HEIGHT;
     vesa.buffer_size = VESA_WIDTH * VESA_HEIGHT * VESA_DEPTH / 8;
-    vesa.framebuffer = xx map_memory(vesa.buffer_size, physical_address = boot_data.vesa_framebuffer);
+
+    flags := Page_Flags.READ_WRITE | .PRESENT | .PAGE_SIZE;
+    vesa.framebuffer = map_memory(vesa.buffer_size, physical_address = boot_data.vesa_framebuffer, flags);
+    vesa.offscreen_buffer = map_memory(vesa.buffer_size);
 
     char_count := 95;
     assert(font.width % 95 == 0);
@@ -87,14 +91,14 @@ vesa_draw_frame :: () {
 
                 line := cursor_y * (vesa.char_height + 2) * VESA_WIDTH;
                 column := cursor_x * vesa.char_width;
-                source := vesa.framebuffer[line + column + x + y * VESA_WIDTH + top_left];
+                source := vesa.offscreen_buffer[line + column + x + y * VESA_WIDTH + top_left];
 
                 r := cast(u32) (cast(float) cast(u8) (source >> 16) * (1 - t) + cast(float) 0x18 * t);
                 g := cast(u32) (cast(float) cast(u8) (source >>  8) * (1 - t) + cast(float) 0x18 * t);
                 b := cast(u32) (cast(float) cast(u8) (source)       * (1 - t) + cast(float) 0x18 * t);
 
                 blended: u32 = b | (g << 8) | (r << 16);
-                vesa.framebuffer[line + column + x + y * VESA_WIDTH + top_left] = blended;
+                vesa.offscreen_buffer[line + column + x + y * VESA_WIDTH + top_left] = blended;
             }
 
             cursor_x += 1;
@@ -137,7 +141,7 @@ vesa_draw_frame :: () {
             for y: 0..vesa.char_height-1 for x: 0..vesa.char_width-1 {
                 line := cursor_y * (vesa.char_height + 2) * VESA_WIDTH;
                 column := cursor_x * vesa.char_width;
-                source := vesa.framebuffer[line + column + x + y * VESA_WIDTH + top_left];
+                source := vesa.offscreen_buffer[line + column + x + y * VESA_WIDTH + top_left];
 
                 brightness := cast(u32) vesa.font.data[source_top_left + x + y * vesa.font.width];
                 t := cast(float) brightness / 255;
@@ -147,7 +151,7 @@ vesa_draw_frame :: () {
                 b := cast(u32) (cast(float) cast(u8) (source)       * (1 - t) + cast(float) color.b * t);
 
                 blended: u32 = b | (g << 8) | (r << 16);
-                vesa.framebuffer[line + column + x + y * VESA_WIDTH + top_left] = blended;
+                vesa.offscreen_buffer[line + column + x + y * VESA_WIDTH + top_left] = blended;
             }
 
             cursor_x += 1;
@@ -161,6 +165,8 @@ vesa_draw_frame :: () {
         vesa.cursor_y = cursor_y;
         vesa.old_cursor = vesa.cursor;
     }
+
+    crt_memcpy(xx vesa.framebuffer, xx vesa.offscreen_buffer, xx vesa.buffer_size);
 }
 }
 
@@ -275,11 +281,6 @@ END;
 
 welcome_screen :: () {
 
-#if USE_VGA {
-    margin = 0;
-    indent = 0;
-}
-
     print("\n");
     print(TITLE, theme.primary);
     print("\n\n");
@@ -287,7 +288,8 @@ welcome_screen :: () {
     print("Hello, sailor.\n");
 
     print("Boot time is ");
-    print_cmos_datetime_string();
+    print(get_cmos_datetime_string());
+    print(".\n");
 
     print("There are ");
     print(file_count);
@@ -327,9 +329,13 @@ welcome_screen :: () {
         vesa.old_cursor = 0;
         vesa.cursor_x = 0;
         vesa.cursor_y = 0;
+
+        value: u64 = (cast(u64) theme.background.as_u32) | ((cast(u64) theme.background.as_u32) << 32);
         for 0..vesa.pixels / 2 - 1 {
-                << (cast(*u64) vesa.framebuffer + it) = (cast(u64) theme.background.as_u32) | ((cast(u64) theme.background.as_u32) << 32);
+            << (cast(*u64) vesa.offscreen_buffer + it) = value;
         }
+
+        crt_memcpy(xx vesa.framebuffer, xx vesa.offscreen_buffer, xx vesa.buffer_size);
     }
 
     theme: Theme;
