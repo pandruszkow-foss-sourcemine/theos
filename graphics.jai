@@ -288,7 +288,8 @@ welcome_screen :: () {
     print("Hello, sailor.\n");
 
     print("Boot time is ");
-    print(get_cmos_datetime_string());
+    calendar := cmos_get_calendar_time();
+    print(Basic.calendar_to_string(calendar));
     print(".\n");
 
     print("There are ");
@@ -319,6 +320,7 @@ welcome_screen :: () {
     print("Jai ", theme.accent);
     print(COMPILER_VERSION, theme.accent);
     print(".\n\n");
+    print_stack_trace();
 }
 
 #if ENABLE_VESA {

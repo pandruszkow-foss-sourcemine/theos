@@ -1,5 +1,6 @@
 
 Basic :: #import "Basic";
+String :: #import "String";
 
 #import "Machine_X64";
 #load "elf/elf.jai";
@@ -10,11 +11,31 @@ Basic :: #import "Basic";
 
 cpu: Cpu_X86;
 
+Bios_Memory_Map_Entry :: struct {
+    base: u64;
+    limit: u64;
+    type: enum u32 {
+        NONE         :: 0x0;
+        AVAILABLE    :: 0x1;
+        RESERVED     :: 0x2;
+        ACPI_RECLAIM :: 0x3;
+        ACPI_NVS      :: 0x4;
+        BAD           :: 0x5;
+    }
+    _: u32;
+}
+
+#assert(size_of(Bios_Memory_Map_Entry) == 24);
+
 Boot_Data :: struct {
     vesa_framebuffer: u32;
     boot_drive_number: u8;
+    memory_map_size: u16;
+    memory_map: *Bios_Memory_Map_Entry;
 }
-boot_data: Boot_Data;
+boot_data: *Boot_Data;
+
+#assert(size_of(Boot_Data) < 0x800);
 
 #program_export
 kernel_entry :: () {
@@ -23,13 +44,14 @@ kernel_entry :: () {
     kernel_context.logger = log;
 
     push_context kernel_context {
-        boot_data = << cast(*type_of(boot_data)) BOOT_DATA_AREA;
+        boot_data = xx BOOT_DATA_AREA;
 
         idt_init();
         pic_init();
         cmos_init();
 
         cpu = get_cpu_info();
+        init_physical_allocator();
         page_table_init();
         enable_simd(cpu);
         enable_ps2_keyboard();
@@ -56,13 +78,75 @@ kernel_entry :: () {
 
         random_seed = xx rdtsc();
         vesa_init(boot_data, font);
-
         clear_screen();
-        print("\n> ");
+
+        // test := Basic.tprint("%", 123435);
+        // print(Basic.sprint("%", 1234));
+        // dont();
+
+        // welcome_screen();
+        context.print_style.default_format_int.base = 16;
+        context.print_style.default_format_int.digits_per_comma = 4;
+        context.print_style.default_format_int.comma_string = "_";
+
+        memory_map := get_memory_map();
+
+        ti := type_info(type_of(Bios_Memory_Map_Entry.type));
+
+        print("| Base          | Limit         | Type          |\n");
+        print("-------------------------------------------------\n");
+        for memory_map {
+            print("| ");
+
+            base := Basic.sprint("%", it.base);
+            for 0..12 - base.count print(" ");
+            print(base);
+
+            print(" | ");
+
+            limit := Basic.sprint("%", it.limit);
+            for 0..12 - limit.count print(" ");
+            print(limit);
+
+            print(" | ");
+
+            name := String.to_lower_copy(ti.names[it.type]);
+            name[0] -= #char "a" - #char "A";
+            print(name);
+            for 0..12 - name.count print(" ");
+            print(" |\n");
+        }
+
+        print(Basic.sprint("\nVesa framebuffer: %\n", boot_data.vesa_framebuffer));
+
+        context.print_style.default_format_int.digits_per_comma = 0;
+        context.print_style.default_format_int.base = 10;
         vesa_draw_frame();
 
         while true #asm { hlt; }
     }
+}
+
+#add_context printing_stack_trace: bool;
+
+print_stack_trace :: () {
+    if context.printing_stack_trace return;
+    context.printing_stack_trace = true;
+    print("Stack trace:\n", theme.accent);
+
+    node := context.stack_trace;
+    while node {
+        if node.info != null {
+            print(Basic.sprint("   | %:% in ", String.path_filename(node.info.location.fully_pathed_filename), node.line_number));
+            print(Basic.sprint("%", node.info.name), theme.primary);
+            print("()\n");
+
+        }
+        node = node.next;
+    }
+    print("\n");
+    vesa_draw_frame();
+    context.printing_stack_trace = false;
 }
 
 allocate_memory :: (mode: Allocator_Mode, size: s64, old_size: s64, old_buffer: *void, user_data: *void) -> *void {
@@ -236,7 +320,6 @@ enable_simd :: (cpu: Cpu_X86) {
 
     if check_feature(cpu.feature_leaves, .AVX) #asm XSAVE {
         index: gpr === c;
-        xor index, index;
 
         xgetbv xcr0_h:, xcr0_l:, index;
         or xcr0_l, 7;
@@ -284,7 +367,7 @@ idt: [0x100] Idt_Entry #align 0x1000;
 idt_add_handler :: (address: *void, index: int) {
     _address := cast(u64) address;
 
-    entry: Idt_Entry = ---;
+    entry: Idt_Entry;
     entry.offset_1  = xx  _address        & 0xffff;
     entry.offset_2  = xx (_address >> 16) & 0xffff;
     entry.offset_3  = xx (_address >> 32) & 0xffffffff;
@@ -524,43 +607,21 @@ cmos_set_frequency :: (rate: u8) {
     #asm { sti; }
 }
 
-get_cmos_datetime_string :: () -> string {
-    weekday := weekdays[cmos_read(.WEEKDAY) - 1];
-    month   := months[cmos_read(.MONTH) - 1];
-    day     := cmos_read(.DAY_OF_THE_MONTH);
-    year    := cmos_read(.YEAR) + 2000;
+cmos_get_calendar_time :: () -> Basic.Calendar_Time {
+    cal: Basic.Calendar_Time;
+    cal.time_zone = .UTC;
 
-    hours   := cmos_read(.HOURS);
-    minutes := cmos_read(.MINUTES);
-    seconds := cmos_read(.SECONDS);
+    cal.month\      _starting_at_0 = cast(s8) cmos_read(.MONTH) - 1;
+    cal.day_of_month_starting_at_0 = cast(s8) cmos_read(.DAY_OF_THE_MONTH) - 1;
+    cal.day_of_week\_starting_at_0 = cast(s8) cmos_read(.WEEKDAY) - 1;
 
-    return Basic.sprint("% % %, %, %:%:%", weekday, month, day, year, hours, minutes, seconds);
+    cal.year   = cast(s32) cmos_read(.YEAR) + 2000;
+    cal.hour   = cast(s8)  cmos_read(.HOURS);
+    cal.minute = cast(s8)  cmos_read(.MINUTES);
+    cal.second = cast(s8)  cmos_read(.SECONDS);
+
+    return cal;
 }
-
-months :: string.[
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-];
-
-weekdays :: string.[
-    "Sunday",
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-];
 
 
 
@@ -580,6 +641,14 @@ wait_for_seconds :: (seconds: float) {
 }
 
 
+
+get_memory_map :: () -> [] Bios_Memory_Map_Entry {
+    memory_map: [] Bios_Memory_Map_Entry;
+    memory_map.count = xx boot_data.memory_map_size;
+    memory_map.data = boot_data.memory_map;
+
+    return memory_map;
+}
 
 IDENTITY_MAP_SIZE :: 0x400_000;
 PAGE_TABLE_RANGE :: 0x200_000;
@@ -675,22 +744,22 @@ get_or_create_page_table :: (table: *u64, entry: u64) -> *u64 {
 map_memory :: (size_bytes: int, virtual_address: u64 = xx,no_check -1, physical_address: u64 = xx,no_check -1, flags := Page_Flags.PRESENT | .READ_WRITE, loc := #caller_location) -> *void {
     page_count := (size_bytes + (0x1000 - 1)) / 0x1000;
 
-    target := physical_address;
-    if target == xx,no_check -1 {
-        target = get_new_page_frame(page_count);
-    }
-
     source := virtual_address;
     if source == xx,no_check -1 {
         source = get_new_virtual_page(page_count);
     }
+    target := physical_address;
 
-    assert(address_is_page(target), "Not a page", loc);
     assert(address_is_page(source), "Not a page", loc);
 
     for 0..page_count-1 {
         offset := cast(u64) it * 4096;
-        map_page(source + offset, target + offset, flags, loc);
+
+        phys: u64;
+        if target == xx,no_check -1  phys = get_new_page_frame();
+        else phys = target + offset;
+
+        map_page(source + offset, phys, flags, loc);
     }
 
     return xx source;
@@ -713,16 +782,6 @@ map_page :: (virtual_address: u64, physical_address: u64, flags := Page_Flags.PR
     pt[pt_offset] = physical_address | cast(u64) flags;
 }
 
-PAGE_FRAME_BASE :: IDENTITY_MAP_SIZE;
-page_frame_watermark: int;
-
-get_new_page_frame :: (count: int = 1) -> u64 {
-    address := page_frame_watermark * 0x1000 + PAGE_FRAME_BASE;
-    page_frame_watermark += count;
-    memset(xx (xx address + VIRTUAL_MIRROR), 0, 0x1000);
-    return xx address;
-}
-
 address_is_page :: (address: u64) -> bool {
     if (address >> 48 != 0xffff) && (address >> 48 != 0x0) return false;
     return address % 0x1000 == 0;
@@ -736,7 +795,6 @@ get_new_virtual_page :: (count: int = 1) -> u64 {
     virtual_page_watermark += count;
     return xx address;
 }
-
 
 get_physical_address :: (virtual_address: *void) -> u64, present: bool {
     using Page_Flags;
@@ -795,7 +853,7 @@ page_fault_handler :: () #no_call {
     }
 
     push_context Context.{} {
-        print("\n\nAn exception has occurred:  ");
+        print("An exception has occurred:  ");
         print("Page fault\n\n", theme.accent);
 
         cr2: u64;
@@ -828,6 +886,88 @@ page_fault_handler :: () #no_call {
     }
 
     while true #asm { hlt; }
+}
+
+
+
+bitmap_space: [ONE_GB / 0x1000 / 64] u64;
+
+#import "Bit_Array";
+bitmap: Bit_Array;
+
+bitmap_entries_for_limit :: (limit: u64) -> u64 {
+    return limit / 0x1000 / 64;
+}
+
+reserve_physical_region :: (base: u64, limit: u64) {
+    if base > ONE_GB return;
+
+    start_bit := base / 0x1000;
+    end_bit := (base + limit) / 0x1000;
+
+    for start_bit..end_bit {
+        assert(bitmap[xx it] == false);
+        set_bit(*bitmap, xx it);
+    }
+}
+
+init_physical_allocator :: () {
+    for 0..bitmap_entries_for_limit(IDENTITY_MAP_SIZE) - 1 {
+        bitmap_space[it] = 0xffff_ffff_ffff_ffff;
+    }
+
+    bitmap.allocator.proc = (mode: Allocator_Mode, size: s64, old_size: s64, old_buffer: *void, user_data: *void) -> *void {
+        return bitmap_space.data;
+    };
+    init_bit_array(*bitmap, xx ONE_GB / 0x1000);
+
+    lowest_free_bit = IDENTITY_MAP_SIZE / 0x1000;
+
+    memory_map := get_memory_map();
+
+    for memory_map {
+        if it.type == .NONE continue;
+        if it.base < 0x100_000 continue;
+        if (it.base % 0x1000 != 0) || (it.limit % 0x1000 != 0) continue;
+
+        if it.type != .AVAILABLE {
+            reserve_physical_region(it.base, it.limit);
+        }
+    }
+
+    // if ENABLE_VESA {
+    //     reserve_physical_region(boot_data.vesa_framebuffer, VESA_WIDTH * VESA_HEIGHT * VESA_DEPTH / 8);
+    // }
+}
+
+lowest_free_bit: u64;
+
+get_new_page_frame :: () -> u64 {
+    address: u64;
+    bit := lowest_free_bit;
+
+    while true {
+        if !bitmap[xx bit] {
+            address = bit * 0x1000;
+            set_bit(*bitmap, xx bit);
+            break;
+        }
+    }
+
+    lowest_free_bit = bit + 1;
+
+    memset(xx (address + VIRTUAL_MIRROR), 0, 0x1000);
+    return address;
+}
+
+release_page_frame :: (address: u64) {
+    assert(address_is_page(address));
+
+    bit := address / 0x1000;
+    clear_bit(*bitmap, xx bit);
+    if bit < lowest_free_bit {
+        lowest_free_bit = bit;
+    }
 }
 
 

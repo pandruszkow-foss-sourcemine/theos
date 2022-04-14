@@ -13,6 +13,8 @@
 %define dbs_read 0x02
 %define dbs_ext_read 0x42
 
+%define sbe 0x15
+
 %define PRINT_MODES 0
 
 [org 0x7c00]
@@ -62,6 +64,26 @@ start:
     ; === Enable A20 (probably) ===
     mov ax, 0x2401
     int 0x15
+
+    ; === Get memory map ===
+    mov word [boot_data_area + 6], 0
+    mov di, boot_data_area + 0x800;
+    xor ebx, ebx
+
+  .mmap_loop:
+    mov eax, 0xe820
+    mov edx, 0x534D4150
+    mov ecx, 24
+    add di, 24
+
+    int sbe
+
+    cmp ebx, 0x0
+    je .mmap_end
+    inc word [boot_data_area + 6]
+    jmp .mmap_loop
+  .mmap_end:
+    mov word [boot_data_area + 8], boot_data_area + 0x800
 
 %if ENABLE_VESA
     ; === Get VESA info ===

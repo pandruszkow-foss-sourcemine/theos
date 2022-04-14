@@ -16,6 +16,12 @@ kbd :: () #c_call {
     push_context kernel_context {
         defer pic_end_of_interrupt(0x1);
 
+        // context.printing_stack_trace = true;
+        // context.stack_trace = Basic.New(Stack_Trace_Node);
+        // context.stack_trace.info = Basic.New(Stack_Trace_Procedure_Info);
+        // context.stack_trace.info.location.fully_pathed_filename = "keyboard.jai";
+        // context.stack_trace.info.name = "Keyboard interrupt";
+        // context.printing_stack_trace = false;
         key := port_read(0x60);
 
         if key < 0x80 {
@@ -114,9 +120,12 @@ run_command :: (command_string: string) {
                 break;
             }
         }
+      case "trace";
+        print_stack_trace();
       case "time";
         print("\n");
-        print(get_cmos_datetime_string());
+        calendar := cmos_get_calendar_time();
+        print(Basic.calendar_to_string(calendar));
         print(".\n\n");
       case "exec";
         for 0..file_count - 1 {

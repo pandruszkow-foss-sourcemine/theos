@@ -162,7 +162,7 @@ interrupts: [] struct {
         options.output_type = .EXECUTABLE;
         options.entry_point_name = "kernel_entry";
 
-        options.stack_trace = false;
+        options.stack_trace = true;
         options.array_bounds_check = .OFF;
         options.cast\_bounds_check = .OFF;
         options.math\_bounds_check = .OFF;
@@ -233,7 +233,7 @@ interrupts: [] struct {
         }
         compiler_end_intercept(w);
 
-        objdump_command := string.["objdump", "-x", ".build/kernel_elf", "-d", "-M", "intel"];
+        objdump_command := string.["objdump", "-x", ".build/kernel_elf", "-d", "-M", "intel", "--source"];
         success, error_code, stdout, stderr = os_run_command(.. objdump_command, capture_and_return_output = true);
         if !success || error_code != 0 {
             write_string("objdump failed to run!\n");
