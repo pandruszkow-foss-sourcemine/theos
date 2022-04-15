@@ -50,6 +50,8 @@ interrupt_wrapper:
     out 0x70, al
     in al, 0x71
 
+    call handle_interrupt
+
     ; === Send EOI ===
     mov al, 0x20
     out 0xa0, al

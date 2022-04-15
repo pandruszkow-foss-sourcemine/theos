@@ -54,7 +54,7 @@ kernel_entry :: () {
         init_physical_allocator();
         page_table_init();
         enable_simd(cpu);
-        enable_ps2_keyboard();
+        // enable_ps2_keyboard();
 
         buffer := map_memory(MAILBAG_SIZE);
 
@@ -79,49 +79,17 @@ kernel_entry :: () {
         random_seed = xx rdtsc();
         vesa_init(boot_data, font);
         clear_screen();
-
-        // test := Basic.tprint("%", 123435);
-        // print(Basic.sprint("%", 1234));
-        // dont();
-
-        // welcome_screen();
-        context.print_style.default_format_int.base = 16;
-        context.print_style.default_format_int.digits_per_comma = 4;
-        context.print_style.default_format_int.comma_string = "_";
-
-        memory_map := get_memory_map();
-
-        ti := type_info(type_of(Bios_Memory_Map_Entry.type));
-
-        print("| Base          | Limit         | Type          |\n");
-        print("-------------------------------------------------\n");
-        for memory_map {
-            print("| ");
-
-            base := Basic.sprint("%", it.base);
-            for 0..12 - base.count print(" ");
-            print(base);
-
-            print(" | ");
-
-            limit := Basic.sprint("%", it.limit);
-            for 0..12 - limit.count print(" ");
-            print(limit);
-
-            print(" | ");
-
-            name := String.to_lower_copy(ti.names[it.type]);
-            name[0] -= #char "a" - #char "A";
-            print(name);
-            for 0..12 - name.count print(" ");
-            print(" |\n");
-        }
-
-        print(Basic.sprint("\nVesa framebuffer: %\n", boot_data.vesa_framebuffer));
-
-        context.print_style.default_format_int.digits_per_comma = 0;
-        context.print_style.default_format_int.base = 10;
         vesa_draw_frame();
+
+        cmos_set_frequency(3);
+        cmos_enable_irq(true);
+
+        while true {
+            print("Testing What i would like to do is like print a much longer message so that it is more likely that an interrupt rolls into a print statement..\n");
+            vesa_draw_frame();
+            wait_for_seconds(1);
+            dont();
+        }
 
         while true #asm { hlt; }
     }
@@ -396,6 +364,11 @@ Interrupts :: #foreign_library,no_dll ".build/interrupt";
 
 interrupt_wrapper :: () #c_call #foreign Interrupts;
 
+#program_export
+handle_interrupt :: () #c_call {
+    timer_ticks_elapsed += 1;
+}
+
 Pic_Port :: enum u16 {
     MASTER_CMD  :: 0x20;
     MASTER_DATA :: 0x21;
@@ -604,14 +577,16 @@ timer_ticks_target: u64;
 
 wait_for_seconds :: (seconds: float) {
     timer_ticks_elapsed = 0;
-    timer_ticks_target = cast(u64) (seconds * 18.2065);
+    timer_ticks_target = cast(u64) (seconds * 800);
 
     while true {
-        #asm { hlt; }
+        #asm { sti; hlt; }
         if timer_ticks_elapsed >= timer_ticks_target {
             break;
         }
     }
+
+    timer_ticks_target = 0;
 }
 
 
