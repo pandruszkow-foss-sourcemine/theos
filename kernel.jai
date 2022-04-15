@@ -85,7 +85,7 @@ kernel_entry :: () {
         cmos_enable_irq(true);
 
         while true {
-            print("Testing What i would like to do is like print a much longer message so that it is more likely that an interrupt rolls into a print statement..\n");
+            print("Testing..\n");
             vesa_draw_frame();
             wait_for_seconds(1);
             dont();
