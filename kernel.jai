@@ -19,8 +19,8 @@ Bios_Memory_Map_Entry :: struct {
         AVAILABLE    :: 0x1;
         RESERVED     :: 0x2;
         ACPI_RECLAIM :: 0x3;
-        ACPI_NVS      :: 0x4;
-        BAD           :: 0x5;
+        ACPI_NVS     :: 0x4;
+        BAD          :: 0x5;
     }
     _: u32;
 }
@@ -381,11 +381,10 @@ idt_add_handler :: (address: *void, index: int) {
 
 idt_init :: () {
     idt_desc.limit = 0x100 * size_of(Idt_Entry);
-    idt_desc.base = *idt;
+    idt_desc.base = idt.data;
 
     register_generated_isrs();
     idt_add_handler(xx page_fault_handler, 0x0e);
-    idt_add_handler(xx syscall,            0x80);
 
     address := *idt_desc;
     #asm {
@@ -396,31 +395,6 @@ idt_init :: () {
 Interrupts :: #foreign_library,no_dll ".build/interrupt";
 
 interrupt_wrapper :: () #c_call #foreign Interrupts;
-
-#program_export
-handle_interrupt :: () #c_call {
-    timer_ticks_elapsed += 10000;
-}
-
-syscall :: () #no_call {
-    #asm {
-        cli;
-    }
-
-    syscall_print :: () #c_call {
-        message := << cast(*string) (0x400_000 - size_of(string));
-        push_context .{} {
-            print(message);
-        }
-    }
-
-    syscall_print();
-
-    #asm {
-        sti;
-        iret.q;
-    }
-}
 
 Pic_Port :: enum u16 {
     MASTER_CMD  :: 0x20;
@@ -575,9 +549,9 @@ cmos_enable_irq :: (periodic: bool, alarm := false, update := false) {
     using Cmos_Port;
     using Cmos_Register;
 
+    #asm { cli; }
     pic_enable_irq(0x8);
 
-    #asm { cli; }
     port_write(ADDRESS, STATUS_REG_B | 0x80);
     cmos_b := port_read(Cmos_Port.DATA);
 

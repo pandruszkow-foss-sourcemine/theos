@@ -41,7 +41,7 @@ extern handle_interrupt
 %endmacro
 
 global interrupt_wrapper
-align 16
+align 8
 interrupt_wrapper:
     cli
     push rax
@@ -49,8 +49,6 @@ interrupt_wrapper:
     mov al, 0x0c
     out 0x70, al
     in al, 0x71
-
-    ; call handle_interrupt
 
     ; === Send EOI ===
     mov al, 0x20
