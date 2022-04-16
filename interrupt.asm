@@ -44,7 +44,7 @@ global interrupt_wrapper
 align 8
 interrupt_wrapper:
     cli
-    push rax
+    push_all
     ; === Read status register C ===
     mov al, 0x0c
     out 0x70, al
@@ -57,5 +57,5 @@ interrupt_wrapper:
     out 0xa0, al
     out 0x20, al
 
-    pop rax
+    pop_all
     iretq

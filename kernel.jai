@@ -1,5 +1,5 @@
 
-Basic :: #import "Basic";
+Basic  :: #import "Basic";
 String :: #import "String";
 
 #import "Machine_X64";
@@ -47,6 +47,7 @@ kernel_entry :: () {
         boot_data = xx BOOT_DATA_AREA;
 
         idt_init();
+        gdt_init();
         pic_init();
         cmos_init();
 
@@ -54,7 +55,7 @@ kernel_entry :: () {
         init_physical_allocator();
         page_table_init();
         enable_simd(cpu);
-        // enable_ps2_keyboard();
+        enable_ps2_keyboard();
 
         buffer := map_memory(MAILBAG_SIZE);
 
@@ -81,14 +82,16 @@ kernel_entry :: () {
         clear_screen();
         vesa_draw_frame();
 
-        cmos_set_frequency(3);
+        cmos_set_frequency(4);
         cmos_enable_irq(true);
 
         while true {
-            print("Testing..\n");
+            print("tick ");
             vesa_draw_frame();
-            wait_for_seconds(1);
-            dont();
+            wait_for_seconds(0.25);
+            print("tock ");
+            vesa_draw_frame();
+            wait_for_seconds(0.25);
         }
 
         while true #asm { hlt; }
@@ -304,6 +307,85 @@ BochsBreak :: () #expand {
 
 
 
+gdt: [10] u64 #align 0x80;
+
+Gdt_Entry_Flags :: enum {
+    LONG_MODE_CODE  :: 0x02 << 52;
+    SIZE            :: 0x04 << 52;
+    GRANULARITY     :: 0x08 << 52;
+    ACCESSED        :: 0x01 << 40;
+    READ_WRITE      :: 0x02 << 40;
+    DIRECTION       :: 0x04 << 40;
+    EXECUTABLE      :: 0x08 << 40;
+    DESCRIPTOR_TYPE :: 0x10 << 40;
+    PRIVILEGE0      :: 0x20 << 40;
+    PRIVILEGE1      :: 0x40 << 40;
+    PRESENT         :: 0x80 << 40;
+}
+
+make_gdt_entry :: (base: u64, limit: u32, flags: u64) -> u64 {
+    entry: u64;
+
+    target := cast(*u8) *entry;
+    target[0] = xx ((limit & 0xff));
+    target[1] = xx ((limit >> 8) & 0xff);
+    target[6] = xx ((limit >> 16) & 0x0f);
+
+    target[2] = xx (base & 0xff);
+    target[3] = xx ((base >> 8) & 0xff);
+    target[4] = xx ((base >> 16) & 0xff);
+    target[7] = xx ((base >> 24) & 0xff);
+
+    entry = << cast(*u64) target;
+    entry |= flags;
+    return entry;
+}
+
+tss: Task_State_Segment #align 0x80;
+Task_State_Segment :: struct {
+    reserved_0: u32;
+    rsp:        [3] u64 #align 4;
+    reserved_1: [2] u32;
+    ist:        [7] u64 #align 4;
+    reserved_2: [2] u32;
+    reserved_3: u16;
+    iobp:       u16;
+}
+
+#assert(size_of(Task_State_Segment) == 0x68);
+
+gdt_init :: () {
+    using Gdt_Entry_Flags;
+
+    gdt[0] = 0x0;
+    gdt[1] = xx (READ_WRITE | PRESENT | DESCRIPTOR_TYPE | LONG_MODE_CODE | EXECUTABLE);
+    gdt[2] = xx (READ_WRITE | PRESENT | DESCRIPTOR_TYPE);
+    gdt[3] = xx make_gdt_entry(xx *tss, size_of(Task_State_Segment), xx SIZE | xx (0x89 << 40));
+    gdt[4] = 0x0;
+
+    gdtr: struct {
+        limit: u16;
+        base: u64 #align 2;
+    }
+
+    gdtr.limit = 0x28;
+    gdtr.base = xx gdt.data;
+
+    gdtrp := *gdtr;
+
+    tss.ist[0] = 0x280_000;
+    tss.iobp = size_of(Task_State_Segment);
+
+    #asm {
+        lgdt [gdtrp];
+        rax: gpr === a;
+        mov.w rax, 0x18;
+    }
+    #bytes .[0x0f, 0x00, 0xd8]; // ltr ax
+}
+
+
+
 Interrupt_Stack_Frame :: struct {
     ip:    u64;
     cs:    u64;
@@ -340,7 +422,7 @@ idt_add_handler :: (address: *void, index: int) {
     entry.offset_2  = xx (_address >> 16) & 0xffff;
     entry.offset_3  = xx (_address >> 32) & 0xffffffff;
     entry.selector  = 0b00001000;
-    entry.ist       = 0x0;
+    entry.ist       = 0x01;
     entry.flags     = 0x8e;
     entry.reserved  = 0x0;
 
@@ -577,7 +659,7 @@ timer_ticks_target: u64;
 
 wait_for_seconds :: (seconds: float) {
     timer_ticks_elapsed = 0;
-    timer_ticks_target = cast(u64) (seconds * 800);
+    timer_ticks_target = cast(u64) (seconds * 2000);
 
     while true {
         #asm { sti; hlt; }
@@ -901,6 +983,7 @@ get_new_page_frame :: () -> u64 {
             set_bit(*bitmap, xx bit);
             break;
         }
+        bit += 1;
     }
 
     lowest_free_bit = bit + 1;
@@ -1052,21 +1135,21 @@ ata_pio_write :: (buffer: *u16, start_sector: u32, sector_count: u8) -> Ata_Erro
 
 
 Zip_Entry :: struct {
-    signature:           u32 #align 2;
-    version_made_by:     u16 #align 2;
-    version_needed:      u16 #align 2;
-    bit_flag:            u16 #align 2;
-    compression_type:    u16 #align 2;
-    modification_time:   u16 #align 2;
-    modification_date:   u16 #align 2;
-    crc:                 u32 #align 2;
-    compressed_len:      u32 #align 2;
-    chunk_len:           u32 #align 2;
-    name_len:            u16 #align 2;
-    extra_field_len:     u16 #align 2;
-    file_comment_len:    u16 #align 2;
-    disk_number:         u16 #align 2;
-    internal_attributes: u16 #align 2;
+    signature:           u32;
+    version_made_by:     u16;
+    version_needed:      u16;
+    bit_flag:            u16;
+    compression_type:    u16;
+    modification_time:   u16;
+    modification_date:   u16;
+    crc:                 u32;
+    compressed_len:      u32;
+    chunk_len:           u32;
+    name_len:            u16;
+    extra_field_len:     u16;
+    file_comment_len:    u16;
+    disk_number:         u16;
+    internal_attributes: u16;
     external_attributes: u32 #align 2;
     chunk_offset:        u32 #align 2;
 } #no_padding

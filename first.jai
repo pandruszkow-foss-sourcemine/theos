@@ -169,7 +169,9 @@ interrupts: [] struct {
         options.null_pointer_check = .OFF;
         options.dead_code_elimination = .MODULES_ONLY;
 
+        options.backend = .LLVM;
         options.additional_linker_arguments = .["-T", "link.ld"];
+        options.llvm_options.debug_options = .["-mno-red-zone"];
 
         set_build_options(options, w);
 
