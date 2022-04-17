@@ -60,7 +60,7 @@ isr_slot_0x% :: () #no_call {
 #if %2 {
         print("\n   Error code: "); print_hex(cast(u32) error_code, theme.primary);    print("\n");
 }
-        #if ENABLE_VESA vesa_draw_frame();
+        #if ENABLE_VESA paint_screen();
     }
 
     #asm {
@@ -100,6 +100,59 @@ interrupts: [] struct {
     .{ "Security exception fault",         0x1e, true  },
 ];
 
+irqs: [] struct {
+    handler: string;
+    slot: int;
+} = . [
+    .{ "pit_interrupt",  0x0 },
+    .{ "ps2_interrupt",  0x1 },
+    .{ "cmos_interrupt", 0x8 },
+];
+
+IRQ_PREAMBLE :: #string END
+
+section .text
+
+[bits 64]
+
+%macro push_all 0
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+%endmacro
+
+%macro pop_all 0
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+%endmacro
+
+END;
+
 #run {
     set_build_options_dc(.{do_output = false});
     user_args, compiler_args := compiler_get_command_line_arguments();
@@ -134,12 +187,23 @@ interrupts: [] struct {
 
     KERNEL_START_ADDRESS    :: PAGE_TABLE_ADDRESS + PAGE_TABLE_SIZE;
 
-    write_string("\n=== Compiling Kernel ===\n");
+    write_string("\n=== Assembling interrupt routines ===\n");
     {
+        builder: String_Builder;
+        append(*builder, IRQ_PREAMBLE);
+        for irqs {
+            print_to_builder(*builder, "extern %\n", it.handler);
+            print_to_builder(*builder, "global %_wrapper\n", it.handler);
+            print_to_builder(*builder, "align 0x8\n%_wrapper:\n", it.handler);
+            print_to_builder(*builder, "\tcli\n\tpush_all\n\tcall %\n\tpop_all\n\tiretq\n\n", it.handler);
+        }
+
+        write_entire_file(".build/interrupt.asm", builder_to_string(*builder));
+
         noptions: Nasm_Options;
         noptions.outfile = ".build/interrupt.so";
         noptions.format = .ELF64;
-        noptions.input_file_name = "interrupt.asm";
+        noptions.input_file_name = ".build/interrupt.asm";
         noptions.warnings |= .ALL;
 
         success, error_code, stdout, stderr := run_nasm(noptions);
@@ -153,8 +217,10 @@ interrupts: [] struct {
         } else {
             write_string("Assembly success!\n");
         }
+    }
 
-
+    write_string("\n=== Compiling Kernel ===\n");
+    {
         w := compiler_create_workspace("Kernel");
         options := get_build_options(w);
         options.output_executable_name = "kernel_elf";
@@ -171,7 +237,7 @@ interrupts: [] struct {
 
         options.backend = .LLVM;
         options.additional_linker_arguments = .["-T", "link.ld"];
-        options.llvm_options.debug_options = .["-mno-red-zone"];
+        // options.llvm_options.debug_options = .["-mno-red-zone"];
 
         set_build_options(options, w);
 
@@ -184,43 +250,23 @@ interrupts: [] struct {
                 append(*isr_code, tprint(ISR_DECLARATION, formatInt(it.slot, base=16), it.has_error_code, it.message));
                 append(*isr_code, "\n");
             }
+            for irqs {
+                format := "%_wrapper :: () #c_call #foreign Interrupts;";
+                insert := tprint(format, it.handler);
+                append(*isr_code, insert);
+
+            }
 
             append(*isr_code, "register_generated_isrs :: () {\n");
             for interrupts {
                 append(*isr_code, tprint("    idt_add_handler(xx isr_slot_0x%, 0x%1);\n", formatInt(it.slot, base=16)));
             }
+            for irqs {
+                append(*isr_code, tprint("    idt_add_handler(xx %_wrapper, 0x%);\n", it.handler, formatInt(it.slot + 0x20, base=16)));
+            }
             append(*isr_code, "}\n");
 
             add_build_string(builder_to_string(*isr_code), w);
-        }
-
-        {
-            REGISTERS_TO_PUSH :: string.[
-                "a", "b", "c",  "d",  "si", "di",
-                "8", "9", "10", "11", "12", "13", "14", "15"
-            ];
-
-            register_pinnings: String_Builder;
-            append(*register_pinnings, "PushAll :: () #expand {\n    #asm {\n");
-            append(*register_pinnings, "        rsp: gpr === sp;\n");
-            for REGISTERS_TO_PUSH {
-                append(*register_pinnings, tprint("        r%: gpr === %1;\n", it));
-                append(*register_pinnings, tprint("        push rsp, r%;\n", it));
-            }
-            append(*register_pinnings, "    }\n}");
-
-            add_build_string(builder_to_string(*register_pinnings), w);
-
-            reset(*register_pinnings);
-            append(*register_pinnings, "PopAll :: () #expand {\n    #asm {\n");
-            append(*register_pinnings, "        rsp: gpr === sp;\n");
-            for < REGISTERS_TO_PUSH {
-                append(*register_pinnings, tprint("        r%: gpr === %1;\n", it));
-                append(*register_pinnings, tprint("        pop rsp, r%;\n", it));
-            }
-            append(*register_pinnings, "    }\n}");
-
-            add_build_string(builder_to_string(*register_pinnings), w);
         }
 
         add_build_string(tprint("MAILBAG_SIZE     :: %;", zip.count), w);
@@ -236,7 +282,7 @@ interrupts: [] struct {
         compiler_end_intercept(w);
 
         objdump_command := string.["objdump", "-x", ".build/kernel_elf", "-d", "-M", "intel", "--source"];
-        success, error_code, stdout, stderr = os_run_command(.. objdump_command, capture_and_return_output = true);
+        success, error_code, stdout, stderr := os_run_command(.. objdump_command, capture_and_return_output = true);
         if !success || error_code != 0 {
             write_string("objdump failed to run!\n");
         }

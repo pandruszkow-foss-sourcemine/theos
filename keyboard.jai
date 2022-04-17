@@ -7,62 +7,115 @@ keyboard_state: struct {
     color: Color;
 }
 
-kbd :: () #c_call {
-    PushAll();
-    kernel_context: Context;
-    kernel_context.allocator.proc = allocate_memory;
-    kernel_context.logger = log;
-
-    push_context kernel_context {
-        defer pic_end_of_interrupt(0x1);
-
-        // context.printing_stack_trace = true;
-        // context.stack_trace = Basic.New(Stack_Trace_Node);
-        // context.stack_trace.info = Basic.New(Stack_Trace_Procedure_Info);
-        // context.stack_trace.info.location.fully_pathed_filename = "keyboard.jai";
-        // context.stack_trace.info.name = "Keyboard interrupt";
-        // context.printing_stack_trace = false;
-        key := port_read(0x60);
-
-        if key < 0x80 {
-            if key == xx Keyboard_Scan_Code.LSHIFT {
-                keyboard_state.shift = true;
-            }
-
-            else if scan_table[key - 1] == #char "]" {
-                message: string;
-                message.data = vesa.text_buffer + vesa.cursor - vesa.cursor_x + 2;
-                message.count = vesa.cursor_x - 2;
-                print("\n");
-                run_command(message);
-                print("> ");
-                keyboard_state.color = theme.primary;
-            }
-
-            else {
-                char: string;
-                if keyboard_state.shift {
-                    char.data = *scan_table_shifted[key];
-                } else {
-                    char.data = *scan_table[key];
-                }
-                char.count = 1;
-                if << char.data == #char " " keyboard_state.color = theme.accent;
-                print(char, keyboard_state.color);
-            }
-
-            vesa_draw_frame();
-        } else {
-            key -= 0x80;
-            if key == xx Keyboard_Scan_Code.LSHIFT {
-                keyboard_state.shift = false;
-            }
-        }
-    }
-    PopAll();
+key_buffer: struct {
+    size :: 32;
+    buffer: [size] Keyboard_Scan_Code;
+    read_index: int;
+    write_index: int;
 }
 
-run_command :: (command_string: string) {
+read_key_buffer :: () -> Keyboard_Scan_Code {
+    using key_buffer;
+    if read_index == write_index return .NONE;
+
+    key := buffer[read_index];
+
+    read_index += 1;
+    read_index %= size;
+
+    return key;
+}
+
+write_key_buffer :: (key: Keyboard_Scan_Code) #no_context {
+    using key_buffer;
+
+    buffer[write_index] = key;
+
+    write_index += 1;
+    write_index %= size;
+}
+
+#program_export
+ps2_interrupt :: () #c_call {
+    defer pic_end_of_interrupt(0x1);
+    key := port_read(0x60);
+    write_key_buffer(cast(Keyboard_Scan_Code) key);
+}
+
+handle_keyboard_events :: () {
+    while true {
+        scan_code := read_key_buffer();
+        if scan_code == .NONE return;
+        key := cast(u8) scan_code;
+
+        if key >= 0x80 {
+            scan_code -= xx 0x80;
+            if scan_code == .LSHIFT {
+                keyboard_state.shift = false;
+            }
+            continue;
+        }
+
+        if scan_code == .LSHIFT {
+            keyboard_state.shift = true;
+        }
+
+        else if scan_code == .ENTER {
+            // message: string;
+            // message.data = vesa.text_viewer + vesa.cursor - vesa.cursor_x + 2;
+            // message.count = vesa.cursor_x - 2;
+            // print("\n");
+            // run_command(message);
+            // print("> ");
+            // keyboard_state.color = theme.primary;
+        }
+
+        else if scan_code == .BACKSPACE {
+            text_viewer_backspace(*shell.text);
+        }
+
+        else {
+            char: string;
+            if keyboard_state.shift {
+                char.data = *scan_table_shifted[key];
+            } else {
+                char.data = *scan_table[key];
+            }
+            char.count = 1;
+            if << char.data == #char " " keyboard_state.color = theme.accent;
+            print(char, keyboard_state.color);
+        }
+
+        paint_screen();
+    }
+}
+
+Shell :: struct {
+    text: Text_Viewer;
+    background: Surface;
+}
+
+shell: Shell;
+init_shell :: (font: Pnm) {
+    shell.background = create_surface(graphics.screen_width, graphics.screen_height);
+    add_surface_to_screen(*shell.background, 0, 0);
+
+    text_surface := create_surface(graphics.screen_width / 3, graphics.screen_height - 2 * 70);
+    shell.text = create_text_viewer(font, text_surface);
+
+    entry := add_surface_to_screen(*shell.text.surface, 70, 70);
+    entry.transparency = true;
+    entry.shadow = true;
+
+    clear_surface_to_color(shell.background, theme.background);
+}
+
+paint_shell :: () {
+    render_text_viewer(*shell.text);
+    paint_screen();
+}
+
+shell_run_command :: (command_string: string) {
     if !command_string.count return;
 
     is_whitespace :: (char: u8) -> bool {
@@ -114,14 +167,16 @@ run_command :: (command_string: string) {
                     print("\n");
                     print(content);
                     print("\n");
-                } else {
-                    vesa_blit(parse_pnm(content.data));
                 }
                 break;
             }
         }
       case "trace";
+        print("\n");
         print_stack_trace();
+      case "random";
+        print_hex(random());
+        print("\n");
       case "time";
         print("\n");
         calendar := cmos_get_calendar_time();
@@ -151,21 +206,7 @@ run_command :: (command_string: string) {
     }
 }
 
-keyboard_isr :: () #no_call {
-    #asm {
-        cli;
-    }
-
-    kbd();
-
-    #asm {
-        sti;
-        iret.q;
-    }
-}
-
 enable_ps2_keyboard :: () {
-    idt_add_handler(xx keyboard_isr, 0x21);
     pic_enable_irq(0x1);
     keyboard_state.color = theme.primary;
 }

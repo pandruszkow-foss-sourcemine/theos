@@ -1,28 +1,270 @@
 
-USE_VGA :: !ENABLE_VESA;
+Graphics :: struct {
+    screen_buffer: *u32;
+    vesa_framebuffer: *u32;
 
-Vesa :: struct {
-    framebuffer: *u32;
-    offscreen_buffer: *u32;
-    buffer_size: int;
-    pixels: int;
+    screen_width: int;
+    screen_height: int;
+    surfaces: *Screen_Draw_List_Entry;
 
-    char_width:  int;
+    draw_list_store: [10] Screen_Draw_List_Entry;
+    draw_list_size: int;
+}
+
+graphics: Graphics;
+
+Surface :: struct {
+    buffer: *u32;
+    width: int;
+    height: int;
+}
+
+create_surface :: (width: int, height: int) -> Surface {
+    surface: Surface;
+    surface.width = width;
+    surface.height = height;
+    surface.buffer = map_memory(width * height * size_of(u32));
+    return surface;
+}
+
+clear_surface_to_color :: (surface: Surface, color: Color) {
+    value := (cast(u64) color.as_u32) | ((cast(u64) color.as_u32) << 32);
+    pixels := surface.width * surface.height;
+
+    for 0..pixels / 2 - 1 {
+        << (cast(*u64) surface.buffer + it) = value;
+    }
+}
+
+Screen_Draw_List_Entry :: struct {
+    surface: *Surface;
+    x: int;
+    y: int;
+
+    transparency: bool;
+    shadow: bool;
+
+    next: *Screen_Draw_List_Entry;
+    prev: *Screen_Draw_List_Entry;
+}
+
+add_surface_to_screen :: (surface: *Surface, x: int, y: int) -> *Screen_Draw_List_Entry {
+    entry := *graphics.draw_list_store[graphics.draw_list_size];
+    graphics.draw_list_size += 1;
+    entry.surface = surface;
+    entry.x = x;
+    entry.y = y;
+
+    last_entry := *graphics.surfaces;
+    while << last_entry {
+        last_entry = *(<< last_entry).next;
+    }
+
+    entry.prev = << last_entry;
+    << last_entry = entry;
+
+    return entry;
+}
+
+blend :: (target: Color, source: Color) -> Color #expand {
+    t := cast(float) source.a / 255;
+    result: Color;
+
+    result.r = cast(u8) (cast(float) target.r * (1 - t) + cast(float) source.r * t);
+    result.g = cast(u8) (cast(float) target.g * (1 - t) + cast(float) source.g * t);
+    result.b = cast(u8) (cast(float) target.b * (1 - t) + cast(float) source.b * t);
+
+    return result;
+}
+
+paint_screen :: () {
+    g := *graphics;
+
+    entry := g.surfaces;
+    while entry {
+        for 0..entry.surface.height-1 {
+            target := g.screen_buffer + entry.x;
+            target += entry.y * g.screen_width;
+            target += it * g.screen_width;
+
+            source := entry.surface.buffer;
+            source += it * entry.surface.width;
+            count := entry.surface.width;
+
+            if entry.transparency for 0..count-1 {
+                source_color := << cast(*Color) (source + it);
+                if source_color.a == 0 continue;
+                target_color := << cast(*Color) (target + it);
+
+                target[it] = blend(target_color, source_color).as_u32;
+
+                if entry.shadow {
+                    source_color := Color.{ as_u32 = 0x00181818 };
+                    source_color.a = xx source[it] >> 24;
+                    
+                    shadow_target := target + 2 + 2 * g.screen_width;
+                    target_color := << cast(*Color) (shadow_target + it);
+                    shadow_target[it] = blend(target_color, source_color).as_u32;
+                }
+            } else {
+                crt_memcpy(target, source, cast(u64) count * size_of(u32));
+            }
+        }
+        entry = entry.next;
+    }
+
+    screen_size := g.screen_width * g.screen_height * size_of(u32);
+    crt_memcpy(g.vesa_framebuffer, g.screen_buffer, xx screen_size);
+}
+
+init_graphics :: (boot_data: Boot_Data) {
+    g := *graphics;
+
+    g.screen_width = VESA_WIDTH;
+    g.screen_height = VESA_HEIGHT;
+
+    screen_buffer_size := g.screen_width * g.screen_height * size_of(u32);
+
+    flags := Page_Flags.READ_WRITE | .PRESENT | .PAGE_SIZE;
+    g.vesa_framebuffer = map_memory(screen_buffer_size, physical_address = boot_data.vesa_framebuffer, flags);
+    g.screen_buffer = map_memory(screen_buffer_size);
+}
+
+
+
+Text_Viewer :: struct {
+    surface: Surface;
+    buffer: *u8;
+    size: int;
+    used: int;
+
+    font: Pnm;
+    char_width: int;
     char_height: int;
-
-    cursor: int;
-    old_cursor: int;
-    text_buffer: *u8;
 
     attr_count: int;
     attr_buffer: *Attribute;
+
+    shadow: bool;
+}
+
+create_text_viewer :: (font: Pnm, surface: Surface) -> Text_Viewer {
+    text: Text_Viewer;
+    text.buffer = map_memory(0x4000);
+    text.size = 0x4000;
+    text.font = font;
+    text.surface = surface;
+
+    char_count := 95;
+    assert(font.width % 95 == 0);
+
+    text.char_width  = font.width / char_count;
+    text.char_height = font.height;
+
+    text.attr_buffer = map_memory(0x1000);
+    text.shadow = true;
+
+    return text;
+}
+
+set_text_color :: (text: *Text_Viewer, color: Color) {
+    attribute: Attribute;
+    attribute.start_position = text.used;
+    attribute.color = color;
+    text.attr_buffer[text.attr_count] = attribute;
+    text.attr_count += 1;
+}
+
+write_to_text_viewer :: (text: *Text_Viewer, message: string) {
+    write_to_text_viewer(text, message, theme.foreground);
+}
+
+write_to_text_viewer :: (text: *Text_Viewer, message: string, color: Color) {
+    assert(text.used + message.count < text.size, "Text buffer overflow");
+
+    crt_memcpy(text.buffer + text.used, message.data, xx message.count);
+
+    set_text_color(text, color);
+    text.used += message.count;
+}
+
+clear_text_viewer :: (text: *Text_Viewer) {
+    text.used = 0;
+    text.attr_count = 0;
+}
+
+text_viewer_backspace :: (text: *Text_Viewer) {
+    if text.used == 0 return;
+    text.used -= 1;
+    text.buffer[shell.text.used] = 0;
+}
+
+render_text_viewer :: (text: *Text_Viewer) {
+    surface := *text.surface;
+    clear_surface_to_color(surface, .{ as_u32 = 0 });
+
+    cursor_y: int;
+    cursor_x: int;
+
+    color := theme.foreground;
+
     attr_cursor: int;
 
-    cursor_x: int;
-    cursor_y: int;
+    for 0..text.used - 1 {
+        if text.attr_count > attr_cursor {
+            attr := text.attr_buffer[attr_cursor];
+            while attr.start_position == it && text.attr_count > attr_cursor {
+                color = attr.color;
+                attr_cursor += 1;
+                attr = text.attr_buffer[attr_cursor];
+            }
+        }
 
-    font: Pnm;
+        char := text.buffer[it];
+
+        if char == 0 continue;
+        if char == #char "\r" continue;
+        if char == #char "\n" {
+            cursor_y += 1;
+            cursor_x = 0;
+            continue;
+        }
+
+        source_top_left := text.char_width * (char - 0x20);
+        for y: 0..text.char_height - 1 for x: 0..text.char_width - 1 {
+            line := cursor_y * (text.char_height + 2) * surface.width;
+            column := cursor_x * text.char_width;
+
+            pixel := line + column + x + y * surface.width;
+
+            if char == 0 surface.buffer[pixel] = 0;
+            else {
+                index := source_top_left + x + y * text.font.width;
+                color.a = cast(u8) text.font.data[index];
+                surface.buffer[pixel] = color.as_u32;
+            }
+        }
+
+        cursor_x += 1;
+        if (cursor_x + 1) * text.char_width >= surface.width {
+            cursor_x = 0;
+            cursor_y += 1;
+        }
+    }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+USE_VGA :: !ENABLE_VESA;
 
 Attribute :: struct {
     start_position: int;
@@ -31,165 +273,8 @@ Attribute :: struct {
 }
 
 Text_Flags :: enum_flags u32 {
-    
+
 }
-
-vesa: Vesa;
-
-vesa_init :: (boot_data: Boot_Data, font: Pnm) {
-#if ENABLE_VESA {
-
-    assert(font.type == .GRAYMAP);
-
-    vesa.pixels = VESA_WIDTH * VESA_HEIGHT;
-    vesa.buffer_size = VESA_WIDTH * VESA_HEIGHT * VESA_DEPTH / 8;
-
-    flags := Page_Flags.READ_WRITE | .PRESENT | .PAGE_SIZE;
-    vesa.framebuffer = map_memory(vesa.buffer_size, physical_address = boot_data.vesa_framebuffer, flags);
-    vesa.offscreen_buffer = map_memory(vesa.buffer_size);
-
-    char_count := 95;
-    assert(font.width % 95 == 0);
-
-    vesa.char_width  = font.width / char_count;
-    vesa.char_height = font.height;
-
-    vesa.text_buffer = map_memory(0x10_000);
-    vesa.attr_buffer = map_memory(0x10_000);
-
-    vesa.font = font;
-    vesa.cursor = 0;
-
-    set_color(theme.foreground);
-}
-}
-
-vesa_draw_frame :: () {
-#if ENABLE_VESA {
-
-    {
-        top_left := 72 + 72 * VESA_WIDTH;
-
-        cursor_x := vesa.cursor_x;
-        cursor_y := vesa.cursor_y;
-
-        for vesa.old_cursor..vesa.cursor - 1 {
-            char := vesa.text_buffer[it];
-            if char == 0 continue;
-            if char == #char "\r" continue;
-            if char == #char "\n" {
-                cursor_y += 1;
-                cursor_x = 0;
-                continue;
-            }
-
-            source_top_left := vesa.char_width * (char - 0x20);
-
-            for y: 0..vesa.char_height-1 for x: 0..vesa.char_width-1 {
-                brightness := cast(u32) vesa.font.data[source_top_left + x + y * vesa.font.width];
-                t := cast(float) brightness * theme.shadow / 255;
-
-                line := cursor_y * (vesa.char_height + 2) * VESA_WIDTH;
-                column := cursor_x * vesa.char_width;
-                source := vesa.offscreen_buffer[line + column + x + y * VESA_WIDTH + top_left];
-
-                r := cast(u32) (cast(float) cast(u8) (source >> 16) * (1 - t) + cast(float) 0x18 * t);
-                g := cast(u32) (cast(float) cast(u8) (source >>  8) * (1 - t) + cast(float) 0x18 * t);
-                b := cast(u32) (cast(float) cast(u8) (source)       * (1 - t) + cast(float) 0x18 * t);
-
-                blended: u32 = b | (g << 8) | (r << 16);
-                vesa.offscreen_buffer[line + column + x + y * VESA_WIDTH + top_left] = blended;
-            }
-
-            cursor_x += 1;
-            if cursor_x >= 180 {
-                cursor_x = 0;
-                cursor_y += 1;
-            }
-        }
-    }
-
-    {
-        top_left := 70 + 70 * VESA_WIDTH;
-
-        cursor_x := vesa.cursor_x;
-        cursor_y := vesa.cursor_y;
-
-        color := theme.foreground;
-
-        for vesa.old_cursor..vesa.cursor - 1 {
-            if vesa.attr_count > vesa.attr_cursor {
-                attr := vesa.attr_buffer[vesa.attr_cursor];
-                while attr.start_position == it && vesa.attr_count > vesa.attr_cursor {
-                    color = attr.color;
-                    vesa.attr_cursor += 1;
-                    attr = vesa.attr_buffer[vesa.attr_cursor];
-                }
-            }
-
-            char := vesa.text_buffer[it];
-            if char == 0 continue;
-            if char == #char "\r" continue;
-            if char == #char "\n" {
-                cursor_y += 1;
-                cursor_x = 0;
-                continue;
-            }
-
-            source_top_left := vesa.char_width * (char - 0x20);
-
-            for y: 0..vesa.char_height-1 for x: 0..vesa.char_width-1 {
-                line := cursor_y * (vesa.char_height + 2) * VESA_WIDTH;
-                column := cursor_x * vesa.char_width;
-                source := vesa.offscreen_buffer[line + column + x + y * VESA_WIDTH + top_left];
-
-                brightness := cast(u32) vesa.font.data[source_top_left + x + y * vesa.font.width];
-                t := cast(float) brightness / 255;
-
-                r := cast(u32) (cast(float) cast(u8) (source >> 16) * (1 - t) + cast(float) color.r * t);
-                g := cast(u32) (cast(float) cast(u8) (source >> 8)  * (1 - t) + cast(float) color.g * t);
-                b := cast(u32) (cast(float) cast(u8) (source)       * (1 - t) + cast(float) color.b * t);
-
-                blended: u32 = b | (g << 8) | (r << 16);
-                vesa.offscreen_buffer[line + column + x + y * VESA_WIDTH + top_left] = blended;
-            }
-
-            cursor_x += 1;
-            if cursor_x >= 180 {
-                cursor_x = 0;
-                cursor_y += 1;
-            }
-        }
-
-        vesa.cursor_x = cursor_x;
-        vesa.cursor_y = cursor_y;
-        vesa.old_cursor = vesa.cursor;
-    }
-
-    crt_memcpy(xx vesa.framebuffer, xx vesa.offscreen_buffer, xx vesa.buffer_size);
-}
-}
-
-vesa_blit :: (image: Pnm) {
-#if ENABLE_VESA {
-    assert(image.type == .PIXMAP);
-    size := image.width * image.height;
-
-    cursor: int;
-    for y: 0..image.height-1 for x: 0..image.width-1 {
-        if x + y * VESA_WIDTH >= vesa.pixels break;
-
-        r := cast(u32) image.data[cursor];
-        g := cast(u32) image.data[cursor + 1];
-        b := cast(u32) image.data[cursor + 2];
-        vesa.framebuffer[(VESA_WIDTH - 1) - x + y * VESA_WIDTH] = (r << 16) | (g << 8) | b;
-        cursor += 3;
-
-    }
-}
-}
-
-
 
 Pnm :: struct {
     width: int;
@@ -266,87 +351,19 @@ parse_pnm :: (buffer: *u8) -> Pnm {
 }
 
 
-
-TITLE :: #string END
-   /##     /##                                                  
-  | ##    | ##                                                  
- /######  | #######   /######   /######   /#######              
-|_  ##_/  | ##__  ## /##__  ## /##__  ## /##_____/              
-  | ##    | ##  \ ##| ########| ##  \ ##|  ######               
-  | ## /##| ##  | ##| ##_____/| ##  | ## \____  ##              
-  |  ####/| ##  | ##|  #######|  ######/ /#######/              
-   \___/  |__/  |__/ \_______/ \______/ |_______/               
-END;
-
-
-welcome_screen :: () {
-
-    print("\n");
-    print(TITLE, theme.primary);
-    print("\n\n");
-
-    print("Hello, sailor.\n");
-
-    print("Boot time is ");
-    calendar := cmos_get_calendar_time();
-    print(Basic.calendar_to_string(calendar));
-    print(".\n");
-
-    print("There are ");
-    print(file_count);
-    print(" files in the mailbag.\n");
-
-    print("\n");
-
-    ti := type_info(x86_Feature_Flag);
-    print("Supported CPU features: -------------------------------------------", theme.foreground);
-    flags_on_this_line: int;
-    for 0..ti.names.count-1 {
-        if check_feature(cpu.feature_leaves, xx ti.values[it]) {
-            name := ti.names[it];
-            if name.count >= 8 continue;
-
-            if (flags_on_this_line % 7) == 0 print("\n");
-
-            print("| ", theme.foreground);
-            print(name, theme.highlight);
-            for 1..8 - name.count  print(" ");
-            flags_on_this_line += 1;
-        }
-    }
-    print("\n-------------------------------------------------------------------\n", theme.foreground);
-
-    print("Compiled using ", theme.primary);
-    print("Jai ", theme.accent);
-    print(COMPILER_VERSION, theme.accent);
-    print(".\n\n");
-    print_stack_trace();
-}
-
 #if ENABLE_VESA {
+
     clear_screen :: () {
-        vesa.attr_count = 0;
-        vesa.attr_cursor = 0;
-        vesa.cursor = 0;
-        vesa.old_cursor = 0;
-        vesa.cursor_x = 0;
-        vesa.cursor_y = 0;
-
-        value: u64 = (cast(u64) theme.background.as_u32) | ((cast(u64) theme.background.as_u32) << 32);
-        for 0..vesa.pixels / 2 - 1 {
-            << (cast(*u64) vesa.offscreen_buffer + it) = value;
-        }
-
-        crt_memcpy(xx vesa.framebuffer, xx vesa.offscreen_buffer, xx vesa.buffer_size);
+        shell.text.used = 0;
     }
 
     theme: Theme;
     Theme :: struct {
-        background:  Color = .{ as_u32 = 0x00603038 };
-        foreground:  Color = .{ as_u32 = 0x00f8f8f8 };
-        primary:     Color = .{ as_u32 = 0x00ebbcbc };
-        highlight:   Color = .{ as_u32 = 0x00ebbcbc };
-        accent:      Color = .{ as_u32 = 0x0081c44b };
+        background:  Color = .{ as_u32 = 0xff603038 };
+        foreground:  Color = .{ as_u32 = 0xfff8f8f8 };
+        primary:     Color = .{ as_u32 = 0xffebbcbc };
+        highlight:   Color = .{ as_u32 = 0xffebbcbc };
+        accent:      Color = .{ as_u32 = 0xff81c44b };
 
         shadow: float = 1.0;
     }
@@ -357,33 +374,17 @@ welcome_screen :: () {
             b: u8;
             g: u8;
             r: u8;
-            _: u8;
+            a: u8;
         }
     }
     #assert(size_of(Color) == size_of(u32));
-    COLOR_NONE :: Color.{ _ = 123 };
-
-    set_color :: (color: Color) {
-        attribute: Attribute;
-        attribute.start_position = vesa.cursor;
-        attribute.color = color;
-        vesa.attr_buffer[vesa.attr_count] = attribute;
-        vesa.attr_count += 1;
-    }
 
     print :: (text: string) {
         print(text, theme.foreground);
     }
 
     print :: (text: string, color: Color) {
-        if !text.count return;
-        old_color := vesa.attr_buffer[vesa.attr_count].color;
-        set_color(color);
-
-        crt_memcpy(vesa.text_buffer + vesa.cursor, text.data, xx text.count);
-        vesa.cursor += text.count;
-
-        set_color(old_color);
+        write_to_text_viewer(*shell.text, text, color);
     }
 
     print :: (number: int) {
@@ -675,4 +676,83 @@ welcome_screen :: () {
         YELLOW        :: 0x0e;
         BRIGHT_WHITE  :: 0x0f;
     }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
+
+TITLE :: #string END
+   /##     /##                                                  
+  | ##    | ##                                                  
+ /######  | #######   /######   /######   /#######              
+|_  ##_/  | ##__  ## /##__  ## /##__  ## /##_____/              
+  | ##    | ##  \ ##| ########| ##  \ ##|  ######               
+  | ## /##| ##  | ##| ##_____/| ##  | ## \____  ##              
+  |  ####/| ##  | ##|  #######|  ######/ /#######/              
+   \___/  |__/  |__/ \_______/ \______/ |_______/               
+END;
+
+
+welcome_screen :: () {
+
+    print("\n");
+    print(TITLE, theme.primary);
+    print("\n\n");
+
+    print("Hello, sailor.\n");
+
+    print("Boot time is ");
+    calendar := cmos_get_calendar_time();
+    print(Basic.calendar_to_string(calendar));
+    print(".\n");
+
+    print("There are ");
+    print(file_count);
+    print(" files in the mailbag.\n");
+
+    print("\n");
+
+    ti := type_info(x86_Feature_Flag);
+    print("Supported CPU features: -------------------------------------------", theme.foreground);
+    flags_on_this_line: int;
+    for 0..ti.names.count-1 {
+        if check_feature(cpu.feature_leaves, xx ti.values[it]) {
+            name := ti.names[it];
+            if name.count >= 8 continue;
+
+            if (flags_on_this_line % 7) == 0 print("\n");
+
+            print("| ", theme.foreground);
+            print(name, theme.highlight);
+            for 1..8 - name.count  print(" ");
+            flags_on_this_line += 1;
+        }
+    }
+    print("\n-------------------------------------------------------------------\n", theme.foreground);
+
+    print("Compiled using ", theme.primary);
+    print("Jai ", theme.accent);
+    print(COMPILER_VERSION, theme.accent);
+    print(".\n\n");
+    print_stack_trace();
 }

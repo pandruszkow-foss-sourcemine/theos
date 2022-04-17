@@ -56,6 +56,7 @@ kernel_entry :: () {
         page_table_init();
         enable_simd(cpu);
         enable_ps2_keyboard();
+        cmos_enable_irq(true);
 
         buffer := map_memory(MAILBAG_SIZE);
 
@@ -78,23 +79,29 @@ kernel_entry :: () {
         }
 
         random_seed = xx rdtsc();
-        vesa_init(boot_data, font);
-        clear_screen();
-        vesa_draw_frame();
 
-        cmos_set_frequency(4);
-        cmos_enable_irq(true);
+        init_graphics(boot_data);
+        init_shell(font);
+
+        welcome_screen();
+
+        start := timer_ticks_elapsed;
+        render_text_viewer(*shell.text);
+        end := timer_ticks_elapsed;
+        print("Rendering text: "); print(cast(int) (end - start)); print("\n");
+        paint_screen();
+        start = timer_ticks_elapsed;
+        print("Painting screen: "); print(cast(int) (start - end)); print("\n");
+
+        paint_shell();
 
         while true {
-            print("tick ");
-            vesa_draw_frame();
-            wait_for_seconds(0.25);
-            print("tock ");
-            vesa_draw_frame();
-            wait_for_seconds(0.25);
+            handle_keyboard_events();
+            paint_shell();
+            #asm {
+                hlt;
+            }
         }
-
-        while true #asm { hlt; }
     }
 }
 
@@ -108,7 +115,8 @@ print_stack_trace :: () {
     node := context.stack_trace;
     while node {
         if node.info != null {
-            print(Basic.sprint("   | %:% in ", String.path_filename(node.info.location.fully_pathed_filename), node.line_number));
+            filename := String.path_filename(node.info.location.fully_pathed_filename);
+            print(Basic.sprint("   | %:% in ", filename, node.line_number));
             print(Basic.sprint("%", node.info.name), theme.primary);
             print("()\n");
 
@@ -116,7 +124,7 @@ print_stack_trace :: () {
         node = node.next;
     }
     print("\n");
-    vesa_draw_frame();
+    paint_screen();
     context.printing_stack_trace = false;
 }
 
@@ -145,8 +153,18 @@ crt_memset :: (target: *u8, value: s32, count: u64) -> *void #c_call {
     return target;
 }
 
-crt_memcpy :: (dest: *u8, src: *u8, $$ count: u64) -> *void #c_call {
-    if count % 8 == 0 {
+crt_memcpy :: (dest: *void, src: *void, $$ count: u64) -> *void #c_call {
+    if count % 16 == 0 && (xx dest % 16 == 0) && (xx src % 16 == 0) {
+        dest128 := cast(*u8) dest;
+        src128 := cast(*u8) src;
+        for 0..count / 16 - 1 {
+            index := it * 16;
+            #asm SSE {
+                movaps xmm:, [src128 + index];
+                movaps [dest128 + index], xmm;
+            }
+        }
+    } else if count % 8 == 0 {
         dest64: *u64 = xx dest;
         src64:  *u64 = xx src;
 
@@ -155,7 +173,7 @@ crt_memcpy :: (dest: *u8, src: *u8, $$ count: u64) -> *void #c_call {
         }
     } else {
         for 0..count - 1 {
-            dest[it] = src[it];
+            (cast(*u8) dest)[it] = (cast(*u8) src)[it];
         }
     }
     return dest;
@@ -180,7 +198,7 @@ assert :: (condition: bool, message: string = "", call_site := #caller_location)
         print(message);
         print("\n");
 
-        #if ENABLE_VESA vesa_draw_frame();
+        paint_screen();
         while true {
             #asm { hlt; }
         }
@@ -282,20 +300,19 @@ enable_simd :: (cpu: Cpu_X86) {
         set_cr4 cr4;
     }
 
-    return;
-    if check_feature(cpu.feature_leaves, .OSXSAVE) #asm {
-        get_cr4 cr4:;
-        or  cr4, CR4_OSXSAVE;
-        set_cr4 cr4;
-    }
-
-    if check_feature(cpu.feature_leaves, .AVX) #asm XSAVE {
-        index: gpr === c;
-
-        xgetbv xcr0_h:, xcr0_l:, index;
-        or xcr0_l, 7;
-        xsetbv xcr0_h, xcr0_l, index;
-    }
+//    if check_feature(cpu.feature_leaves, .OSXSAVE) #asm {
+//        get_cr4 cr4:;
+//        or  cr4, CR4_OSXSAVE;
+//        set_cr4 cr4;
+//    }
+//
+//    if check_feature(cpu.feature_leaves, .AVX) #asm XSAVE {
+//        index: gpr === c;
+//
+//        xgetbv xcr0_h:, xcr0_l:, index;
+//        or xcr0_l, 7;
+//        xsetbv xcr0_h, xcr0_l, index;
+//    }
 }
 
 BochsBreak :: () #expand {
@@ -341,7 +358,6 @@ make_gdt_entry :: (base: u64, limit: u32, flags: u64) -> u64 {
     return entry;
 }
 
-tss: Task_State_Segment #align 0x80;
 Task_State_Segment :: struct {
     reserved_0: u32;
     rsp:        [3] u64 #align 4;
@@ -351,8 +367,9 @@ Task_State_Segment :: struct {
     reserved_3: u16;
     iobp:       u16;
 }
-
 #assert(size_of(Task_State_Segment) == 0x68);
+
+tss: Task_State_Segment #align 0x80;
 
 gdt_init :: () {
     using Gdt_Entry_Flags;
@@ -444,12 +461,6 @@ idt_init :: () {
 
 Interrupts :: #foreign_library,no_dll ".build/interrupt";
 
-interrupt_wrapper :: () #c_call #foreign Interrupts;
-
-#program_export
-handle_interrupt :: () #c_call {
-    timer_ticks_elapsed += 1;
-}
 
 Pic_Port :: enum u16 {
     MASTER_CMD  :: 0x20;
@@ -524,10 +535,9 @@ pic_enable_irq :: (irq: u8) {
     port_write(port, value);
 }
 
+#program_export
+pit_interrupt :: () #c_call {
 
-pit_init :: () {
-    idt_add_handler(xx interrupt_wrapper, 0x20);
-    pic_enable_irq(0x0);
 }
 
 
@@ -535,6 +545,7 @@ pit_init :: () {
 cmos_format: struct {
     bcd_mode: bool;
     twenty_four_h: bool;
+    rate: int;
 }
 
 Cmos_Port :: enum u16 {
@@ -569,7 +580,6 @@ Cmos_Status_B :: enum_flags u8 {
 
 cmos_init :: () {
     using Cmos_Status_B;
-    idt_add_handler(xx interrupt_wrapper, 0x28);
 
     status := cmos_read(.STATUS_REG_B);
     cmos_format.bcd_mode      = status & xx BCD_MODE   > 0;
@@ -605,6 +615,8 @@ cmos_enable_irq :: (periodic: bool, alarm := false, update := false) {
     using Cmos_Register;
 
     #asm { cli; }
+    
+    cmos_set_rate(4);
     pic_enable_irq(0x8);
 
     port_write(ADDRESS, STATUS_REG_B | 0x80);
@@ -622,10 +634,12 @@ cmos_enable_irq :: (periodic: bool, alarm := false, update := false) {
     cmos_read(.STATUS_REG_C);
 }
 
-cmos_set_frequency :: (rate: u8) {
+cmos_set_rate :: (rate: u8) {
     using Cmos_Port;
     using Cmos_Register;
     assert((rate & 0xf) == rate);
+
+    cmos_format.rate = rate;
 
     #asm { cli; }
     port_write(ADDRESS, STATUS_REG_A | 0x80);
@@ -652,14 +666,24 @@ cmos_get_calendar_time :: () -> Basic.Calendar_Time {
     return cal;
 }
 
-
+#program_export
+cmos_interrupt :: () #c_call {
+    cmos_read(.STATUS_REG_C);
+    timer_ticks_elapsed += 1;
+    pic_end_of_interrupt(0x8);
+}
 
 timer_ticks_elapsed: u64;
 timer_ticks_target: u64;
 
+time_difference :: (ticks_a: u64, ticks_b: u64) -> float {
+    frequency := (32768 >> (cmos_format.rate - 1));
+    return cast(float) (ticks_b - ticks_a) / cast(float) frequency;
+}
+
 wait_for_seconds :: (seconds: float) {
     timer_ticks_elapsed = 0;
-    timer_ticks_target = cast(u64) (seconds * 2000);
+    timer_ticks_target = cast(u64) (seconds * (32768 >> (cmos_format.rate - 1)));
 
     while true {
         #asm { sti; hlt; }
@@ -892,7 +916,7 @@ page_fault_handler :: () #no_call {
             get_cr2 cr2;
         }
         print("CR2 contains       "); print_hex(cr2); print(".\n");
-        print("VESA buffer        "); print_hex(cast(u64) vesa.framebuffer); print(".\n\n");
+        print("VESA buffer        "); print_hex(cast(u64) graphics.vesa_framebuffer); print(".\n\n");
 
         phys, present := get_physical_address(xx cr2);
         if present {
@@ -908,7 +932,7 @@ page_fault_handler :: () #no_call {
         print("FLAGS:  "); print_hex(stack_data.flags); print("\n");
         print("SP:     "); print_hex(stack_data.sp);    print("\n");
         print("SS:     "); print_hex(stack_data.ss);    print("\n");
-        vesa_draw_frame();
+        paint_screen();
     }
 
     #asm {
