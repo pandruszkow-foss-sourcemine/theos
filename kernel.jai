@@ -56,7 +56,7 @@ kernel_entry :: () {
         page_table_init();
         enable_simd(cpu);
         enable_ps2_keyboard();
-        // cmos_enable_irq(true);
+        cmos_enable_irq(true);
 
         buffer := map_memory(MAILBAG_SIZE);
 
@@ -91,7 +91,7 @@ kernel_entry :: () {
                 hlt;
             }
             handle_keyboard_events();
-            paint_screen();
+            update_shell();
         }
     }
 }
@@ -193,6 +193,12 @@ assert :: (condition: bool, message: string = "", call_site := #caller_location)
             #asm { hlt; }
         }
     }
+}
+
+shutdown_emulator :: () {
+    out(0xb004, cast(u16) 0x2000);
+    out(0x0604, cast(u16) 0x2000);
+    out(0x4004, cast(u16) 0x3400);
 }
 
 out :: (port: u16, value: $T) {

@@ -2,19 +2,14 @@
 scan_table         :: "\0#1234567890-=\0\tqwertyuiop[]\0\0asdfghjkl;'`\0\\zxcvbnm,./\0*\0 ";
 scan_table_shifted :: "\0#!@#$%^&*()_+\0\0QWERTYUIOP{}\0\0ASDFGHJKL:\"~\0|ZXCVBNM<>?\0*\0 ";
 
-keyboard_state: struct {
-    shift: bool;
-    color: Color;
-}
-
-key_buffer: struct {
+Key_Buffer :: struct {
     size :: 32;
     buffer: [size] Keyboard_Scan_Code;
     read_index: int;
     write_index: int;
 }
 
-read_key_buffer :: () -> Keyboard_Scan_Code {
+read_key_buffer :: (key_buffer: *Key_Buffer) -> Keyboard_Scan_Code {
     using key_buffer;
     if read_index == write_index return .NONE;
 
@@ -26,7 +21,7 @@ read_key_buffer :: () -> Keyboard_Scan_Code {
     return key;
 }
 
-write_key_buffer :: (key: Keyboard_Scan_Code) #no_context {
+write_key_buffer :: (key_buffer: *Key_Buffer, key: Keyboard_Scan_Code) #no_context {
     using key_buffer;
 
     buffer[write_index] = key;
@@ -35,67 +30,20 @@ write_key_buffer :: (key: Keyboard_Scan_Code) #no_context {
     write_index %= size;
 }
 
+input_key_buffer: Key_Buffer;
+
 #program_export
 ps2_interrupt :: () #c_call {
     defer pic_end_of_interrupt(0x1);
     key := port_read(0x60);
-    write_key_buffer(cast(Keyboard_Scan_Code) key);
+    write_key_buffer(*input_key_buffer, cast(Keyboard_Scan_Code) key);
 }
 
-scroll_position: int;
 handle_keyboard_events :: () {
     while true {
-        scan_code := read_key_buffer();
+        scan_code := read_key_buffer(*input_key_buffer);
         if scan_code == .NONE return;
-        key := cast(u8) scan_code;
-
-        if key >= 0x80 {
-            scan_code -= xx 0x80;
-            if scan_code == .LSHIFT {
-                keyboard_state.shift = false;
-            }
-            continue;
-        }
-
-        if scan_code == .LSHIFT {
-            keyboard_state.shift = true;
-        }
-
-        else if scan_code == .W {
-            scroll_position += 1;
-        }
-
-        else if scan_code == .S {
-            scroll_position -= 1;
-        }
-
-        else if scan_code == .ENTER {
-            // message: string;
-            // message.data = vesa.text_viewer + vesa.cursor - vesa.cursor_x + 2;
-            // message.count = vesa.cursor_x - 2;
-            // print("\n");
-            // run_command(message);
-            // print("> ");
-            // keyboard_state.color = theme.primary;
-        }
-
-        else if scan_code == .BACKSPACE {
-            text_viewer_backspace(*shell.text);
-        }
-
-        else {
-            char: string;
-            if keyboard_state.shift {
-                char.data = *scan_table_shifted[key];
-            } else {
-                char.data = *scan_table[key];
-            }
-            char.count = 1;
-            if << char.data == #char " " keyboard_state.color = theme.accent;
-            print(char, keyboard_state.color);
-        }
-
-        paint_screen();
+        write_key_buffer(*shell.key_buffer, scan_code);
     }
 }
 
@@ -105,6 +53,9 @@ Shell :: struct {
     command_buffer: [128] u8;
     command_buffer_size: int;
     background: Solid_Color;
+
+    key_buffer: Key_Buffer;
+    shift_held: bool;
 }
 
 shell: Shell;
@@ -115,38 +66,91 @@ init_shell :: (font: Pnm) {
     add_screen_draw_list_entry(*shell.background, 0, 0);
 
     shell.text         = create_text_viewer(font);
-    // shell.command_text = create_text_viewer(font);
+    shell.command_text = create_text_viewer(font);
 
     add_screen_draw_list_entry(*shell.text, 70, 70);
     shell.text.draw.width = 700;
-    shell.text.draw.height = graphics.screen_height - 2 * 70;
+    shell.text.draw.height = graphics.screen_height - 2 * 70 - 50;
 
-    // add_screen_draw_list_entry(*shell.command_text, 70, 70);
-    // shell.command_text.draw.width = 700;
-    // shell.command_text.draw.height = graphics.screen_height - 2 * 70;
+    add_screen_draw_list_entry(*shell.command_text, 70, graphics.screen_height - 50);
+    shell.command_text.draw.width = 700;
+    shell.command_text.draw.height = graphics.screen_height - 2 * 70;
+    write_to_text_viewer(*shell.command_text, "> ");
+}
+
+update_shell :: () {
+    shell_handle_keypress();
+    time := cmos_get_calendar_time();
+    if xx (time.second % 2) == shell.command_text.point {
+        shell.command_text.point = !shell.command_text.point;
+        paint_screen();
+    }
+}
+
+shell_handle_keypress :: () -> bool {
+    scan_code := read_key_buffer(*shell.key_buffer);
+    if scan_code == .NONE return false;
+
+    while true {
+        key := cast(u8) scan_code;
+
+        if key >= 0x80 {
+            scan_code -= xx 0x80;
+            if scan_code == .LSHIFT {
+                shell.shift_held = false;
+            }
+        }
+
+        else if scan_code == .LSHIFT {
+            shell.shift_held = true;
+        }
+
+        else if scan_code == .ENTER {
+            message: string;
+            message.data = shell.command_text.buffer + 2;
+            message.count = shell.command_text.used - 2;
+            shell.command_text.buffer[shell.command_text.used] = 0;
+            shell_run_command(message);
+            clear_text_viewer(*shell.command_text);
+            write_to_text_viewer(*shell.command_text, "> ");
+        }
+
+        else if scan_code == .BACKSPACE {
+            if shell.command_text.used > 2 {
+                text_viewer_backspace(*shell.command_text);
+            }
+        }
+
+        else {
+            char: string;
+            if shell.shift_held {
+                char.data = *scan_table_shifted[key];
+            } else {
+                char.data = *scan_table[key];
+            }
+            char.count = 1;
+            write_to_text_viewer(*shell.command_text, char);
+        }
+
+        scan_code = read_key_buffer(*shell.key_buffer);
+        if scan_code == .NONE break;
+    }
+    paint_screen();
+    return true;
 }
 
 shell_run_command :: (command_string: string) {
     if !command_string.count return;
 
-    is_whitespace :: (char: u8) -> bool {
-        return char == #char " " || char == #char "\n" || char == 0;
-    }
-
     name: string;
     name.data = command_string.data;
-    while is_whitespace(<< name.data) {
-        name.data += 1;
-    }
-
-    while !is_whitespace(command_string[name.count]) {
-        name.count += 1;
-    }
+    name.count = command_string.count;
 
     if name == {
       case "theos";
-        clear_screen();
         welcome_screen();
+      case "quit";
+        shutdown_emulator();
       case "clear";
         clear_screen();
       case "pci.list";
@@ -214,12 +218,13 @@ shell_run_command :: (command_string: string) {
         print("command not found: \"");
         print(name);
         print("\"\n");
+        print("Command length was: "); print(name.count);
+        print("\n");
     }
 }
 
 enable_ps2_keyboard :: () {
     pic_enable_irq(0x1);
-    keyboard_state.color = theme.primary;
 }
 
 

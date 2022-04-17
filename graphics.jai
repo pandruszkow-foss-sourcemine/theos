@@ -90,7 +90,7 @@ execute_draw_list :: (list: *Draw_List_Entry, surface: Surface) {
 
           case .TEXT_VIEWER;
             text_viewer := cast(*Text_Viewer) entry;
-            render_text_viewer(text_viewer, surface, scroll_position);
+            render_text_viewer(text_viewer, surface, scroll_to_bottom = true);
         }
         entry = entry.next;
     }
@@ -163,7 +163,7 @@ Text_Viewer :: struct {
     attr_buffer: *Attribute;
 
     spacing: int;
-    shadow: bool;
+    point: bool;
 }
 
 create_text_viewer :: (font: Pnm, buffer_size: int = 0x4000) -> Text_Viewer {
@@ -179,7 +179,6 @@ create_text_viewer :: (font: Pnm, buffer_size: int = 0x4000) -> Text_Viewer {
     text.char_height = font.height;
 
     text.attr_buffer = map_memory(0x1000);
-    text.shadow = true;
     text.spacing = 2;
 
     return text;
@@ -214,7 +213,7 @@ clear_text_viewer :: (text: *Text_Viewer) {
 text_viewer_backspace :: (text: *Text_Viewer) {
     if text.used == 0 return;
     text.used -= 1;
-    text.buffer[shell.text.used] = 0;
+    text.buffer[text.used] = 0;
 }
 
 text_viewer_get_rows :: (text: Text_Viewer) -> int {
@@ -244,8 +243,13 @@ render_text_viewer :: (text: *Text_Viewer, surface: Surface, scroll_position: in
     if scroll_to_bottom == true {
         rows := text_viewer_get_rows(text);
         max_rows := text_viewer_how_many_rows_fit_on_these_pixels(text, text.draw.height);
-        scroll_p = rows - max_rows;
-    } else if scroll_p >= 0 {
+
+        if rows > max_rows {
+            scroll_p = rows - max_rows;
+        } else scroll_p = 0;
+    }
+
+    if scroll_p >= 0 {
         rows: int;
         for 0..text.used - 1 {
             if rows == scroll_p break;
@@ -255,6 +259,11 @@ render_text_viewer :: (text: *Text_Viewer, surface: Surface, scroll_position: in
             start += 1;
         }
     } else cursor_y -= scroll_p;
+
+    if text.point {
+        shell.command_text.buffer[shell.command_text.used] = #char "_";
+        shell.command_text.used += 1;
+    }
 
     for start..text.used - 1 {
         if text.attr_count > attr_cursor {
@@ -308,6 +317,11 @@ render_text_viewer :: (text: *Text_Viewer, surface: Surface, scroll_position: in
                 break;
             }
         }
+    }
+
+    if text.point {
+        shell.command_text.used -= 1;
+        shell.command_text.buffer[shell.command_text.used] = 0;
     }
 }
 
@@ -405,7 +419,7 @@ parse_pnm :: (buffer: *u8) -> Pnm {
 #if ENABLE_VESA {
 
     clear_screen :: () {
-        shell.text.used = 0;
+        clear_text_viewer(*shell.text);
     }
 
     theme: Theme;
