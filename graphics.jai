@@ -5,10 +5,10 @@ Graphics :: struct {
 
     screen_width: int;
     screen_height: int;
-    surfaces: *Screen_Draw_List_Entry;
 
-    draw_list_store: [10] Screen_Draw_List_Entry;
-    draw_list_size: int;
+    draw_list: *Draw_List_Entry;
+    draw_list_store: [10] Draw_List_Entry;
+    draw_list_store_used: int;
 }
 
 graphics: Graphics;
@@ -17,11 +17,13 @@ Surface :: struct {
     buffer: *u32;
     width: int;
     height: int;
+    stride: int;
 }
 
 create_surface :: (width: int, height: int) -> Surface {
     surface: Surface;
     surface.width = width;
+    surface.stride = width;
     surface.height = height;
     surface.buffer = map_memory(width * height * size_of(u32));
     return surface;
@@ -36,34 +38,34 @@ clear_surface_to_color :: (surface: Surface, color: Color) {
     }
 }
 
-Screen_Draw_List_Entry :: struct {
-    surface: *Surface;
+Draw_List_Entry :: struct {
+    type: enum {
+        UNINITIALIZED;
+        TEXT_VIEWER;
+        SOLID_COLOR;
+    }
+
+    width: int;
+    height: int;
     x: int;
     y: int;
 
-    transparency: bool;
-    shadow: bool;
-
-    next: *Screen_Draw_List_Entry;
-    prev: *Screen_Draw_List_Entry;
+    next: *Draw_List_Entry;
+    prev: *Draw_List_Entry;
 }
 
-add_surface_to_screen :: (surface: *Surface, x: int, y: int) -> *Screen_Draw_List_Entry {
-    entry := *graphics.draw_list_store[graphics.draw_list_size];
-    graphics.draw_list_size += 1;
-    entry.surface = surface;
+add_screen_draw_list_entry :: (entry: *Draw_List_Entry, x: int, y: int) {
     entry.x = x;
     entry.y = y;
 
-    last_entry := *graphics.surfaces;
+    last_entry := *graphics.draw_list;
+
     while << last_entry {
         last_entry = *(<< last_entry).next;
     }
 
     entry.prev = << last_entry;
     << last_entry = entry;
-
-    return entry;
 }
 
 blend :: (target: Color, source: Color) -> Color #expand {
@@ -77,44 +79,21 @@ blend :: (target: Color, source: Color) -> Color #expand {
     return result;
 }
 
-paint_screen :: () {
-    g := *graphics;
+execute_draw_list :: (list: *Draw_List_Entry, surface: Surface) {
+    entry := list;
 
-    entry := g.surfaces;
     while entry {
-        for 0..entry.surface.height-1 {
-            target := g.screen_buffer + entry.x;
-            target += entry.y * g.screen_width;
-            target += it * g.screen_width;
+        if entry.type == {
+          case .SOLID_COLOR;
+            solid := cast(*Solid_Color) entry;
+            render_solid_color(solid, surface);
 
-            source := entry.surface.buffer;
-            source += it * entry.surface.width;
-            count := entry.surface.width;
-
-            if entry.transparency for 0..count-1 {
-                source_color := << cast(*Color) (source + it);
-                if source_color.a == 0 continue;
-                target_color := << cast(*Color) (target + it);
-
-                target[it] = blend(target_color, source_color).as_u32;
-
-                if entry.shadow {
-                    source_color := Color.{ as_u32 = 0x00181818 };
-                    source_color.a = xx source[it] >> 24;
-                    
-                    shadow_target := target + 2 + 2 * g.screen_width;
-                    target_color := << cast(*Color) (shadow_target + it);
-                    shadow_target[it] = blend(target_color, source_color).as_u32;
-                }
-            } else {
-                crt_memcpy(target, source, cast(u64) count * size_of(u32));
-            }
+          case .TEXT_VIEWER;
+            text_viewer := cast(*Text_Viewer) entry;
+            render_text_viewer(text_viewer, surface, scroll_position);
         }
         entry = entry.next;
     }
-
-    screen_size := g.screen_width * g.screen_height * size_of(u32);
-    crt_memcpy(g.vesa_framebuffer, g.screen_buffer, xx screen_size);
 }
 
 init_graphics :: (boot_data: Boot_Data) {
@@ -130,10 +109,48 @@ init_graphics :: (boot_data: Boot_Data) {
     g.screen_buffer = map_memory(screen_buffer_size);
 }
 
+paint_screen :: () {
+    g := *graphics;
+
+    surface: Surface;
+    surface.buffer = g.screen_buffer;
+    surface.width = g.screen_width;
+    surface.height = g.screen_height;
+    surface.stride = g.screen_width;
+
+    execute_draw_list(g.draw_list, surface);
+
+    screen_size := g.screen_width * g.screen_height * size_of(u32);
+    crt_memcpy(g.vesa_framebuffer, g.screen_buffer, xx screen_size);
+}
+
+
+
+Solid_Color :: struct {
+    #as draw: Draw_List_Entry;
+    draw.type = .SOLID_COLOR;
+    color: Color;
+}
+
+render_solid_color :: (solid: *Solid_Color, surface: Surface) {
+    for 0..surface.height - 1 {
+        target := surface.buffer + solid.draw.x;
+        target += solid.draw.y * surface.stride;
+        target += it * surface.stride;
+
+        count := surface.width;
+        for 0..count-1 {
+            target[it] = solid.color.as_u32;
+        }
+    }
+}
+
 
 
 Text_Viewer :: struct {
-    surface: Surface;
+    #as draw: Draw_List_Entry;
+    draw.type = .TEXT_VIEWER;
+
     buffer: *u8;
     size: int;
     used: int;
@@ -145,15 +162,15 @@ Text_Viewer :: struct {
     attr_count: int;
     attr_buffer: *Attribute;
 
+    spacing: int;
     shadow: bool;
 }
 
-create_text_viewer :: (font: Pnm, surface: Surface) -> Text_Viewer {
+create_text_viewer :: (font: Pnm, buffer_size: int = 0x4000) -> Text_Viewer {
     text: Text_Viewer;
-    text.buffer = map_memory(0x4000);
-    text.size = 0x4000;
+    text.buffer = map_memory(buffer_size);
+    text.size = buffer_size;
     text.font = font;
-    text.surface = surface;
 
     char_count := 95;
     assert(font.width % 95 == 0);
@@ -163,6 +180,7 @@ create_text_viewer :: (font: Pnm, surface: Surface) -> Text_Viewer {
 
     text.attr_buffer = map_memory(0x1000);
     text.shadow = true;
+    text.spacing = 2;
 
     return text;
 }
@@ -199,21 +217,49 @@ text_viewer_backspace :: (text: *Text_Viewer) {
     text.buffer[shell.text.used] = 0;
 }
 
-render_text_viewer :: (text: *Text_Viewer) {
-    surface := *text.surface;
-    clear_surface_to_color(surface, .{ as_u32 = 0 });
+text_viewer_get_rows :: (text: Text_Viewer) -> int {
+    rows: int;
+    for 0..text.used-1 {
+        if text.buffer[it] == #char "\n" {
+            rows += 1;
+        }
+    }
+    return rows;
+}
 
+text_viewer_how_many_rows_fit_on_these_pixels :: (text: Text_Viewer, pixels: int) -> int {
+    return pixels / (text.char_height + text.spacing);
+}
+
+render_text_viewer :: (text: *Text_Viewer, surface: Surface, scroll_position: int = 0, scroll_to_bottom := false) {
     cursor_y: int;
     cursor_x: int;
 
     color := theme.foreground;
-
     attr_cursor: int;
+    start: int;
 
-    for 0..text.used - 1 {
+    scroll_p := scroll_position;
+
+    if scroll_to_bottom == true {
+        rows := text_viewer_get_rows(text);
+        max_rows := text_viewer_how_many_rows_fit_on_these_pixels(text, text.draw.height);
+        scroll_p = rows - max_rows;
+    } else if scroll_p >= 0 {
+        rows: int;
+        for 0..text.used - 1 {
+            if rows == scroll_p break;
+            if text.buffer[it] == #char "\n" {
+                rows += 1;
+            }
+            start += 1;
+        }
+    } else cursor_y -= scroll_p;
+
+    for start..text.used - 1 {
         if text.attr_count > attr_cursor {
             attr := text.attr_buffer[attr_cursor];
-            while attr.start_position == it && text.attr_count > attr_cursor {
+            while attr.start_position <= it && text.attr_count > attr_cursor {
                 color = attr.color;
                 attr_cursor += 1;
                 attr = text.attr_buffer[attr_cursor];
@@ -227,38 +273,43 @@ render_text_viewer :: (text: *Text_Viewer) {
         if char == #char "\n" {
             cursor_y += 1;
             cursor_x = 0;
+            if (cursor_y + 1) * (text.char_height + text.spacing) > text.draw.height {
+                break;
+            }
             continue;
         }
 
         source_top_left := text.char_width * (char - 0x20);
         for y: 0..text.char_height - 1 for x: 0..text.char_width - 1 {
-            line := cursor_y * (text.char_height + 2) * surface.width;
-            column := cursor_x * text.char_width;
+            line := cursor_y * (text.char_height + text.spacing) * surface.stride + text.draw.y * surface.stride;
+            column := cursor_x * text.char_width + text.draw.x;
 
-            pixel := line + column + x + y * surface.width;
+            pixel := line + column + x + y * surface.stride;
 
-            if char == 0 surface.buffer[pixel] = 0;
-            else {
-                index := source_top_left + x + y * text.font.width;
-                color.a = cast(u8) text.font.data[index];
-                surface.buffer[pixel] = color.as_u32;
-            }
+            old := << cast(*Color) (surface.buffer + pixel);
+
+            index := source_top_left + x + y * text.font.width;
+            color.a = cast(u8) text.font.data[index];
+
+            surface.buffer[pixel] = blend(old, color).as_u32;
+
+            shadow_offset := 2 + 2 * surface.stride;
+            shadow_color := Color.{ as_u32 = 0x00181818 };
+            shadow_color.a = color.a;
+
+            if color.a != 0 surface.buffer[pixel + shadow_offset] = blend(old, shadow_color).as_u32;
         }
 
         cursor_x += 1;
-        if (cursor_x + 1) * text.char_width >= surface.width {
+        if (cursor_x + 1) * text.char_width >= text.draw.width {
             cursor_x = 0;
             cursor_y += 1;
+            if (cursor_y + 1) * (text.char_height + text.spacing) >= text.draw.height {
+                break;
+            }
         }
     }
 }
-
-
-
-
-
-
-
 
 
 
@@ -435,38 +486,6 @@ parse_pnm :: (buffer: *u8) -> Pnm {
         print(cast(string) result, color);
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -679,27 +698,6 @@ parse_pnm :: (buffer: *u8) -> Pnm {
 }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    
 
 TITLE :: #string END
    /##     /##                                                  

@@ -42,6 +42,7 @@ ps2_interrupt :: () #c_call {
     write_key_buffer(cast(Keyboard_Scan_Code) key);
 }
 
+scroll_position: int;
 handle_keyboard_events :: () {
     while true {
         scan_code := read_key_buffer();
@@ -58,6 +59,14 @@ handle_keyboard_events :: () {
 
         if scan_code == .LSHIFT {
             keyboard_state.shift = true;
+        }
+
+        else if scan_code == .W {
+            scroll_position += 1;
+        }
+
+        else if scan_code == .S {
+            scroll_position -= 1;
         }
 
         else if scan_code == .ENTER {
@@ -92,27 +101,29 @@ handle_keyboard_events :: () {
 
 Shell :: struct {
     text: Text_Viewer;
-    background: Surface;
+    command_text: Text_Viewer;
+    command_buffer: [128] u8;
+    command_buffer_size: int;
+    background: Solid_Color;
 }
 
 shell: Shell;
 init_shell :: (font: Pnm) {
-    shell.background = create_surface(graphics.screen_width, graphics.screen_height);
-    add_surface_to_screen(*shell.background, 0, 0);
+    shell.background.color = theme.background;
+    shell.background.draw.width = graphics.screen_width;
+    shell.background.draw.height = graphics.screen_height;
+    add_screen_draw_list_entry(*shell.background, 0, 0);
 
-    text_surface := create_surface(graphics.screen_width / 3, graphics.screen_height - 2 * 70);
-    shell.text = create_text_viewer(font, text_surface);
+    shell.text         = create_text_viewer(font);
+    // shell.command_text = create_text_viewer(font);
 
-    entry := add_surface_to_screen(*shell.text.surface, 70, 70);
-    entry.transparency = true;
-    entry.shadow = true;
+    add_screen_draw_list_entry(*shell.text, 70, 70);
+    shell.text.draw.width = 700;
+    shell.text.draw.height = graphics.screen_height - 2 * 70;
 
-    clear_surface_to_color(shell.background, theme.background);
-}
-
-paint_shell :: () {
-    render_text_viewer(*shell.text);
-    paint_screen();
+    // add_screen_draw_list_entry(*shell.command_text, 70, 70);
+    // shell.command_text.draw.width = 700;
+    // shell.command_text.draw.height = graphics.screen_height - 2 * 70;
 }
 
 shell_run_command :: (command_string: string) {

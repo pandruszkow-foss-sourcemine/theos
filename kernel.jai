@@ -56,7 +56,7 @@ kernel_entry :: () {
         page_table_init();
         enable_simd(cpu);
         enable_ps2_keyboard();
-        cmos_enable_irq(true);
+        // cmos_enable_irq(true);
 
         buffer := map_memory(MAILBAG_SIZE);
 
@@ -84,23 +84,14 @@ kernel_entry :: () {
         init_shell(font);
 
         welcome_screen();
-
-        start := timer_ticks_elapsed;
-        render_text_viewer(*shell.text);
-        end := timer_ticks_elapsed;
-        print("Rendering text: "); print(cast(int) (end - start)); print("\n");
         paint_screen();
-        start = timer_ticks_elapsed;
-        print("Painting screen: "); print(cast(int) (start - end)); print("\n");
-
-        paint_shell();
 
         while true {
-            handle_keyboard_events();
-            paint_shell();
             #asm {
                 hlt;
             }
+            handle_keyboard_events();
+            paint_screen();
         }
     }
 }
@@ -124,7 +115,6 @@ print_stack_trace :: () {
         node = node.next;
     }
     print("\n");
-    paint_screen();
     context.printing_stack_trace = false;
 }
 
