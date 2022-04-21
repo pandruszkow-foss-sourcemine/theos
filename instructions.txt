@@ -1,0 +1,6 @@
+
+If the VM, emulator, or physical hardware that you are using reports that "No appropriate VESA mode was found", you can go into config.jai and try different resolution values. 1024x768 is a good bet, but a lot of modern hardware should support stuff like 1920x1080. The DEPTH value should stay the same (32), because the renderer doesn't currently support color formats other than 0x00rrggbb.
+
+Unfortunately you'll have to go to jai/modules/basic/print.jai and manually set USE_SIMD to false. I'll try to fix this soon. Bochs reports a "misaligned xmmword access" when you call Basic.sprint with SIMD enabled, but clearly it works on windows and linux, and I'm not sure how I could be making it become misaligned.
+
+To run on VirtualBox, it may be easiest to generate an ISO optical disc image from the disk image that the metaprogram outputs. To do this automatically, you just need to append "-- iso" to the build command, "/mnt/c/jai/bin/jai-linux first.jai -- iso". Some of the bootloader functions don't always work with floppies, and VBox is a bit weird about virtual hard disks, so we use optical disc images.
